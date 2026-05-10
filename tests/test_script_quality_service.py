@@ -1,0 +1,75 @@
+import unittest
+from unittest.mock import patch
+
+from src.agents.content_agent import ContentAgent
+from src.services.script_quality_service import ScriptQualityService
+
+
+class ScriptQualityServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.quality = ScriptQualityService()
+
+    def test_cliche_script_is_rejected(self):
+        script = self.quality.normalize_script(
+            {
+                "hook": "You must never give up.",
+                "body": "Believe in yourself and dream big because success is a journey.",
+                "outro": "Stay positive and work hard every single day.",
+                "loop_ending": "Never give up.",
+                "vurgulanacak_kelimeler": ["success"],
+            }
+        )
+
+        valid, reasons = self.quality.validate(script)
+
+        self.assertFalse(valid)
+        self.assertTrue(any("cliche" in reason.lower() for reason in reasons))
+
+    def test_best_candidate_prefers_strong_hook_and_loop(self):
+        weak = {
+            "hook": "Believe in yourself today.",
+            "body": "Never give up and dream big because you can do anything.",
+            "outro": "Stay positive and keep going.",
+        }
+        strong = {
+            "hook": "Your excuses are costing you.",
+            "body": "You call it timing, but it is comfort quietly training you to delay the life you keep talking about.",
+            "outro": "Choose the hard thing now, before your excuses choose your future for you.",
+            "loop_ending": "That is why your excuses are costing you.",
+            "hook_pexels_arama_terimi": "human face close up eye contact struggle fast motion dark cinematic portrait",
+            "pexels_arama_temasi": "discipline under pressure dark cinematic human",
+            "pexels_anahtar_kelimeleri": ["close up face", "dark gym struggle", "fast motion focus"],
+            "vurgulanacak_kelimeler": ["excuses", "comfort", "choose"],
+        }
+
+        result = self.quality.select_best([weak, strong])
+
+        self.assertEqual(result.script["hook"], "Your excuses are costing you.")
+        self.assertTrue(result.valid)
+        self.assertGreater(result.script["quality_score"], 0.62)
+
+    def test_content_agent_uses_best_quality_candidate(self):
+        class FakeContentService:
+            def generate_motivation_candidates(self, count=5):
+                return [
+                    {"hook": "Dream big now.", "body": "Believe in yourself.", "outro": "Never give up."},
+                    {
+                        "hook": "You are wasting pressure.",
+                        "body": "You avoid the uncomfortable hour, but that hour is where discipline starts replacing the story you keep repeating when nobody is watching.",
+                        "outro": "Use the pressure today, before comfort teaches you to waste it again.",
+                        "loop_ending": "That is how you stop wasting pressure.",
+                        "vurgulanacak_kelimeler": ["pressure", "discipline", "comfort"],
+                    },
+                ]
+
+        agent = ContentAgent(FakeContentService(), self.quality)
+
+        with patch("src.agents.content_agent.is_script_used_or_similar", return_value=False):
+            script = agent.generate_script(max_attempts=1)
+
+        self.assertEqual(script["hook"], "You are wasting pressure.")
+        self.assertEqual(script["style"], "aggressive_viral_motivation")
+
+
+if __name__ == "__main__":
+    unittest.main()
