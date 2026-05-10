@@ -1,0 +1,19 @@
+# Core AI & LLM
+google-generativeai
+langgraph
+langchain-google-genai
+langchain-core
+
+# Media Processing
+moviepy
+Pillow
+numpy
+edge-tts
+faster-whisper
+
+# Web & API
+requests
+python-dotenv
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
