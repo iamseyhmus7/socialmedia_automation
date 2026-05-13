@@ -9,6 +9,8 @@ class WorkflowState(TypedDict, total=False):
     script_data: Optional[dict[str, Any]]
     script_text: Optional[str]
     vurgulanacak_kelimeler: list[str]
+    media_brief: Optional[dict[str, Any]]
+    render_brief: Optional[dict[str, Any]]
     video_paths: list[str]
     audio_path: Optional[str]
     music_path: Optional[str]
@@ -32,6 +34,10 @@ class WorkflowState(TypedDict, total=False):
     instagram_url: Optional[str]
     instagram_upload_status: Optional[str]
     instagram_upload_error: Optional[str]
+    tiktok_publish_id: Optional[str]
+    tiktok_publish_at: Optional[str]
+    tiktok_upload_status: Optional[str]
+    tiktok_upload_error: Optional[str]
 
 
 def create_initial_state() -> WorkflowState:
@@ -39,12 +45,14 @@ def create_initial_state() -> WorkflowState:
         "script_data": None,
         "script_text": None,
         "vurgulanacak_kelimeler": [],
+        "media_brief": None,
+        "render_brief": None,
         "video_paths": [],
         "audio_path": None,
         "music_path": None,
         "final_video_path": None,
         "tried_music_ids": [],
-        "music_volume": 1.25,
+        "music_volume": 1.00,
         "pending_actions": [],
         "last_feedback_plan": None,
         "user_message": None,
@@ -62,4 +70,8 @@ def create_initial_state() -> WorkflowState:
         "instagram_url": None,
         "instagram_upload_status": None,
         "instagram_upload_error": None,
+        "tiktok_publish_id": None,
+        "tiktok_publish_at": None,
+        "tiktok_upload_status": None,
+        "tiktok_upload_error": None,
     }
