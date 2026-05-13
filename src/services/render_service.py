@@ -81,7 +81,7 @@ class RenderService:
         script_text: str,
         output_filename: str,
         highlighted_words: list[str] | None = None,
-        music_volume: float = 1.25,
+        music_volume: float = 1.00,
     ) -> str | None:
         highlighted_words = highlighted_words or []
         print(f"\n  [RENDER] Compositing video... (music volume: {music_volume})")
@@ -258,7 +258,7 @@ class RenderService:
                 faded.append(clip.with_effects([vfx.CrossFadeIn(fade_duration), vfx.CrossFadeOut(fade_duration)]))
         return concatenate_videoclips(faded, padding=-fade_duration, method="compose")
 
-    def _mix_audio(self, voice_clip, music_path: str | None, total_duration: float, music_volume: float = 1.25):
+    def _mix_audio(self, voice_clip, music_path: str | None, total_duration: float, music_volume: float = 1.00):
         layers = [voice_clip.with_start(0.5)]
         if not music_path:
             print("  [RENDER] No background music path; audio will be voiceover only.", flush=True)
