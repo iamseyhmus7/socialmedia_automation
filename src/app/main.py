@@ -57,6 +57,15 @@ async def run_production() -> dict:
         print(f"Instagram media id: {final_state['instagram_media_id']}")
     if final_state.get("instagram_upload_error"):
         print(f"Instagram upload error: {final_state['instagram_upload_error']}")
+    if final_state.get("tiktok_publish_at"):
+        print(
+            "TikTok queued locally at: "
+            f"{PublishScheduleService().format_local_datetime(final_state['tiktok_publish_at'])}"
+        )
+    if final_state.get("tiktok_publish_id"):
+        print(f"TikTok publish id: {final_state['tiktok_publish_id']}")
+    if final_state.get("tiktok_upload_error"):
+        print(f"TikTok upload error: {final_state['tiktok_upload_error']}")
     print(f"Status: {final_state.get('status')}")
     print("=" * 60 + "\n")
 
