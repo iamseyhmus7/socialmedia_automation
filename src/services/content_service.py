@@ -33,29 +33,69 @@ Hard rules for every candidate:
 4. Body must create tension: problem -> inner conflict -> awareness -> decision.
 5. Outro must not simply close the video; it must create a loop back to the hook.
 6. Never use phrases like "believe in yourself", "never give up", "dream big", "work hard", "stay positive".
-7. Visual fields must be human-focused, dark cinematic, portrait, close-up, motion, struggle, discipline, isolation, or eye contact.
-8. Music must be dark cinematic motivational background music with emotional build, intense feeling, and no vocals.
+7. Visual fields must be concrete searchable stock-video phrases, not metaphors or single abstract words.
+   Good examples: "athlete training alone in dark gym", "person staring into mirror tense face close up",
+   "exhausted runner breathing hard close up", "stressed person under pressure eye contact".
+   Bad examples: "man", "shadow", "darkness", "mirror", "intense".
+8. Create exactly 6 media_plan.video_scenes. Each item must be one concrete stock-video scene object for a separate clip,
+   ordered to match hook -> body -> outro -> loop. Avoid text overlays, brands, celebrities, cartoons, and metaphors.
+9. Music must be dark cinematic motivational background music with emotional build, intense feeling, and no vocals.
+10. Freesound music search fields must be short keyword searches, not generation prompts:
+   - media_plan.music.search_query must be 2-4 searchable words.
+   - media_plan.music.backup_queries must contain 2-3 alternate 2-4 word searches.
+   - Use concrete audio terms like "clock ticking cinematic", "tense piano", "cinematic drone", "sub bass cinematic", "ambient tension".
+   - Do not put constraints like "no vocals", "emotional build", "motivational background music", or full sentences in search_query.
 
 Return only this JSON object:
 {{
   "candidates": [
     {{
       "style": "aggressive_viral_motivation",
-      "shock_hook": "...",
-      "tension_body": "...",
-      "payoff_outro": "...",
-      "loop_ending": "...",
-      "hook": "...",
-      "body": "...",
-      "outro": "...",
-      "hook_pexels_arama_terimi": "...",
-      "pexels_arama_temasi": "...",
-      "pexels_anahtar_kelimeleri": ["term1", "term2", "term3"],
-      "freesound_arama_terimi": "...",
-      "vurgulanacak_kelimeler": ["word1", "word2"],
-      "youtube_title": "...",
-      "youtube_description": "...",
-      "youtube_tags": ["motivation", "shorts", "discipline", "mindset", "stoicism"]
+      "script": {{
+        "shock_hook": "...",
+        "tension_body": "...",
+        "payoff_outro": "...",
+        "loop_ending": "...",
+        "hook": "...",
+        "body": "...",
+        "outro": "..."
+      }},
+      "voice_plan": {{
+        "highlighted_words": ["word1", "word2"],
+        "tone": "intense",
+        "pace": "fast_then_controlled"
+      }},
+      "media_plan": {{
+        "visual_direction": {{
+          "overall_theme": "...",
+          "mood": "dark cinematic human struggle",
+          "color_style": "low key contrast, muted colors",
+          "avoid": ["text overlays", "brands", "celebrities", "cartoons", "visual metaphors"]
+        }},
+        "video_scenes": [
+          {{
+            "scene_id": 1,
+            "beat": "hook",
+            "line_match": "...",
+            "search_query": "...",
+            "backup_queries": ["...", "..."],
+            "emotion": "...",
+            "camera": "close up",
+            "pace": "fast"
+          }}
+        ],
+        "music": {{
+          "search_query": "2-4 searchable audio keywords",
+          "backup_queries": ["2-4 searchable audio keywords", "2-4 searchable audio keywords"],
+          "mood": "dark cinematic motivational emotional build",
+          "volume_hint": 0.55
+        }}
+      }},
+      "publishing": {{
+        "youtube_title": "...",
+        "youtube_description": "...",
+        "youtube_tags": ["motivation", "shorts", "discipline", "mindset", "stoicism"]
+      }}
     }}
   ]
 }}
@@ -93,12 +133,15 @@ Requested edits:
 Rules:
 - Apply only the requested changes.
 - Preserve unchanged sections and search fields unless a requested edit requires changing them.
-- Keep the aggressive viral retention structure: shock_hook, tension_body, payoff_outro, and loop_ending.
+- Keep the aggressive viral retention structure inside script: shock_hook, tension_body, payoff_outro, and loop_ending.
 - Keep hook 3-8 words and total spoken script 35-55 words.
 - Avoid cheap cliches: believe in yourself, never give up, dream big, work hard, stay positive.
-- If the hook/intro changes, update hook_pexels_arama_terimi so the opening shot is human-focused, close-up, tense, fast motion, dark cinematic, and tied to the new hook meaning.
-- If the body/outro theme changes, update pexels_arama_temasi, pexels_anahtar_kelimeleri, and freesound_arama_terimi so visuals and music still follow the script.
-- Keep youtube_title, youtube_description, and youtube_tags aligned with the final script.
+- If the hook/intro changes, update media_plan.video_scenes[0] as a concrete searchable stock-video scene tied to the new hook meaning.
+- If the body/outro theme changes, update media_plan.visual_direction and media_plan.video_scenes as concrete visual scene plans, not metaphors or single abstract words.
+- Keep media_plan.video_scenes at exactly 6 ordered scene objects that match the final script beat by beat.
+- Keep media_plan.music.search_query aligned with the emotional sound of the script, but keep it as 2-4 Freesound search keywords.
+- Keep no-vocals and emotional-build intent in media_plan.music.mood, not in search_query.
+- Keep publishing.youtube_title, publishing.youtube_description, and publishing.youtube_tags aligned with the final script.
 - Return the complete script in the exact same JSON shape.
 - Return no extra keys outside the original script schema.
 """
