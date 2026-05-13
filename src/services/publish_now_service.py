@@ -24,16 +24,12 @@ class PublishNowConfig:
     upload_dir: str | None = None
     date_folder: str | None = None
     video_path: str | None = None
-    all_videos: bool = False
-    all_mp4: bool = False
     latest: bool = False
     title: str | None = None
     description: str | None = None
     tags: list[str] | None = None
     privacy: str = "public"
     publish_at: str | None = None
-    slots: str | None = None
-    schedule_profile: str = PublishScheduleService.DEFAULT_SCHEDULE_PROFILE
     dry_run: bool = False
 
 
@@ -49,17 +45,18 @@ class PublishNowService:
         youtube_service: YouTubeUploadService,
         schedule_service: PublishScheduleService | None = None,
         metadata_provider: Callable[[str], dict[str, Any] | None] | None = None,
+        occupied_publish_times_provider: Callable[[], list[str]] | None = None,
+        upload_recorder: Callable[[str, Any], None] | None = None,
     ):
         self.youtube_service = youtube_service
         self.schedule_service = schedule_service or PublishScheduleService()
         self.metadata_provider = metadata_provider or (lambda _path: {})
+        self.occupied_publish_times_provider = occupied_publish_times_provider or (lambda: [])
+        self.upload_recorder = upload_recorder or (lambda _path, _result: None)
 
     def run(self, config: PublishNowConfig) -> list[str]:
         plan = self.build_plan(config)
         messages = []
-        if len(plan) > 1:
-            upload_dir = self.resolve_upload_dir(config.uploads_dir, config.upload_dir, config.date_folder)
-            messages.append(f"Scheduling {len(plan)} video(s) from: {upload_dir} ({self.schedule_profile(upload_dir, config)} slots)")
 
         for item in plan:
             if config.dry_run:
@@ -67,21 +64,23 @@ class PublishNowService:
                 continue
 
             result = self.upload(item.video_path, config, item.publish_at)
+            self.upload_recorder(item.video_path, result)
             messages.append(self.result_message(item.video_path, result))
 
         return messages
 
     def build_plan(self, config: PublishNowConfig) -> list[PublishPlanItem]:
         upload_dir = self.resolve_upload_dir(config.uploads_dir, config.upload_dir, config.date_folder)
-
-        if self.should_schedule_directory(config):
-            videos = self.find_videos(upload_dir, include_all_mp4=config.all_mp4)
-            slots, _profile = self.resolve_schedule_slots(upload_dir, config)
-            scheduled_times = self.build_schedule(upload_dir, len(videos), slots)
-            return [PublishPlanItem(video_path, scheduled_times[index]) for index, video_path in enumerate(videos)]
-
         video_path = self.resolve_path(config.base_dir, config.video_path) if config.video_path else self.find_latest_video(upload_dir)
-        return [PublishPlanItem(video_path, self.schedule_service.parse_publish_at(config.publish_at))]
+        return [
+            PublishPlanItem(
+                video_path,
+                self.schedule_service.validate_publish_at(
+                    config.publish_at,
+                    occupied_publish_times=self.occupied_publish_times_provider(),
+                ),
+            )
+        ]
 
     def upload(self, video_path: str, config: PublishNowConfig, publish_at: str | None):
         metadata = self.metadata_for_video(video_path)
@@ -92,11 +91,6 @@ class PublishNowService:
             tags=config.tags or metadata.get("tags"),
             privacy_status=config.privacy,
             publish_at=publish_at,
-        )
-
-    def should_schedule_directory(self, config: PublishNowConfig) -> bool:
-        return config.all_videos or config.all_mp4 or (
-            not config.video_path and not config.latest and not config.publish_at
         )
 
     def resolve_path(self, base_dir: str, value: str) -> str:
@@ -114,18 +108,6 @@ class PublishNowService:
     def schedule_date_for_upload_dir(self, upload_dir: str) -> date:
         folder_name = os.path.basename(os.path.normpath(upload_dir))
         return self.schedule_service.schedule_date_for_folder(folder_name)
-
-    def schedule_profile(self, upload_dir: str, config: PublishNowConfig) -> str:
-        schedule_date = self.schedule_date_for_upload_dir(upload_dir)
-        return self.schedule_service.schedule_profile_for_date(schedule_date, config.schedule_profile)
-
-    def resolve_schedule_slots(self, upload_dir: str, config: PublishNowConfig):
-        schedule_date = self.schedule_date_for_upload_dir(upload_dir)
-        return self.schedule_service.resolve_schedule_slots(schedule_date, config.slots, config.schedule_profile)
-
-    def build_schedule(self, upload_dir: str, video_count: int, slots) -> list[str]:
-        schedule_date = self.schedule_date_for_upload_dir(upload_dir)
-        return self.schedule_service.build_schedule(schedule_date, video_count, slots)
 
     def find_latest_date_dir(self, base_uploads_dir: str) -> str:
         date_dirs = []
@@ -149,13 +131,8 @@ class PublishNowService:
 
         return mp4_files
 
-    def find_videos(self, upload_dir: str, include_all_mp4: bool = False) -> list[str]:
-        if include_all_mp4:
-            return sorted(self.find_mp4_files(upload_dir))
-        return self.find_publishable_videos(upload_dir)
-
     def find_latest_video(self, upload_dir: str) -> str:
-        candidates = [(os.path.getmtime(path), path) for path in self.find_videos(upload_dir)]
+        candidates = [(os.path.getmtime(path), path) for path in self.find_publishable_videos(upload_dir)]
         return max(candidates)[1]
 
     def find_publishable_videos(self, upload_dir: str) -> list[str]:
