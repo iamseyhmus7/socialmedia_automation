@@ -59,7 +59,7 @@ class RouterAndStateTests(unittest.TestCase):
     def test_initial_state_uses_louder_background_music(self):
         state = create_initial_state()
 
-        self.assertEqual(state["music_volume"], 1.25)
+        self.assertEqual(state["music_volume"], 1.00)
 
     def test_output_filename_stays_directly_under_date_folder(self):
         nodes = VideoWorkflowNodes.__new__(VideoWorkflowNodes)
@@ -107,6 +107,16 @@ class RouterAndStateTests(unittest.TestCase):
 
 
 class ApprovalUploadTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.publish_times_patch = patch("src.workflows.nodes.get_youtube_publish_times", return_value=[])
+        self.record_upload_patch = patch("src.workflows.nodes.record_youtube_upload")
+        self.publish_times_patch.start()
+        self.record_upload = self.record_upload_patch.start()
+
+    def tearDown(self):
+        self.record_upload_patch.stop()
+        self.publish_times_patch.stop()
+
     async def test_approval_upload_success_is_returned_in_state(self):
         class FakeUploadResult:
             video_id = "abc123"
@@ -133,6 +143,13 @@ class ApprovalUploadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["youtube_url"], "https://www.youtube.com/watch?v=abc123")
         self.assertEqual(result["youtube_publish_at"], "2026-05-09T10:00:00Z")
         self.assertEqual(fake_upload_service.publish_at, "2026-05-09T10:00:00Z")
+        self.record_upload.assert_called_once_with(
+            "video.mp4",
+            "abc123",
+            "https://www.youtube.com/watch?v=abc123",
+            "2026-05-09T10:00:00Z",
+            "scheduled",
+        )
         self.assertEqual(result["instagram_upload_status"], "skipped")
 
     async def test_approval_upload_failure_is_captured_without_raising(self):

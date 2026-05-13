@@ -42,6 +42,9 @@ class HistoryDatabaseTests(unittest.TestCase):
             self.assertIn("used_music", tables)
             self.assertIn("used_scripts", tables)
             self.assertIn("youtube_metadata", tables)
+            self.assertIn("youtube_uploads", tables)
+            self.assertIn("tiktok_metadata", tables)
+            self.assertIn("tiktok_uploads", tables)
             self.assertNotIn("used_voiceovers", tables)
             self.assertIn("status", video_columns)
             self.assertIn("asset_path", video_columns)
@@ -93,6 +96,35 @@ class HistoryDatabaseTests(unittest.TestCase):
         self.assertEqual(metadata["title"], "You are wasting your edge.")
         self.assertEqual(metadata["description"], "A short discipline reminder.")
         self.assertEqual(metadata["tags"], ["motivation", "shorts"])
+
+    def test_youtube_upload_records_publish_times(self):
+        db = database.Database()
+        video_path = os.path.join(self.tmp.name, "final.mp4")
+
+        db.record_youtube_upload(
+            video_path,
+            youtube_video_id="abc123",
+            youtube_url="https://www.youtube.com/watch?v=abc123",
+            publish_at="2026-05-09T10:00:00Z",
+        )
+
+        self.assertEqual(db.get_youtube_publish_times(), ["2026-05-09T10:00:00Z"])
+        self.assertTrue(db.is_youtube_publish_time_occupied("2026-05-09T10:00:00Z"))
+
+    def test_tiktok_upload_records_publish_times_and_due_items(self):
+        db = database.Database()
+        video_path = os.path.join(self.tmp.name, "final.mp4")
+
+        db.save_tiktok_metadata(video_path, "TikTok title", "Caption", ["motivation"])
+        db.record_tiktok_upload(video_path, publish_at="2026-05-09T10:00:00Z")
+
+        self.assertEqual(db.get_tiktok_metadata(video_path)["title"], "TikTok title")
+        self.assertEqual(db.get_tiktok_publish_times(), ["2026-05-09T10:00:00Z"])
+        self.assertTrue(db.is_tiktok_publish_time_occupied("2026-05-09T10:00:00Z"))
+        self.assertEqual(
+            db.get_due_tiktok_uploads("2026-05-09T10:00:00Z"),
+            [{"final_video_path": os.path.abspath(video_path), "publish_at": "2026-05-09T10:00:00Z"}],
+        )
 
     def test_script_similarity_blocks_near_duplicate_approved_scripts(self):
         db = database.Database()

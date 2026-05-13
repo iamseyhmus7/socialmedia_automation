@@ -7,7 +7,14 @@ sys.modules.setdefault("requests", types.SimpleNamespace())
 sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda: None))
 from src.agents.media_agent import MediaAgent
 from src.services.music_service import FreesoundMusicService
-from src.services.video_service import PexelsVideoService
+from src.services.video_service import (
+    CoverrVideoService,
+    MultiSourceVideoService,
+    PexelsVideoService,
+    PixabayVideoService,
+    VideoCandidate,
+    _vertical_provider_query,
+)
 
 
 class MediaAgentQueryTests(unittest.TestCase):
@@ -31,16 +38,97 @@ class MediaAgentQueryTests(unittest.TestCase):
         self.assertIn("portrait", query)
         self.assertIn("motivation", query)
 
-    def test_music_query_keeps_script_music_intent_and_required_constraints(self):
+    def test_music_query_compacts_script_music_intent_for_freesound(self):
         agent = MediaAgent.__new__(MediaAgent)
         query = agent._music_query("low tense piano")
 
-        self.assertIn("low tense piano", query)
-        self.assertIn("cinematic", query)
-        self.assertIn("motivational", query)
-        self.assertIn("emotional build", query)
-        self.assertIn("intense", query)
-        self.assertIn("no vocals", query)
+        self.assertEqual(query, "tense piano cinematic")
+
+    def test_music_query_removes_prompt_noise_for_freesound(self):
+        agent = MediaAgent.__new__(MediaAgent)
+        query = agent._music_query(
+            "cinematic dark clock ticking beat with sub bass motivational emotional build intense no vocals"
+        )
+
+        self.assertEqual(query, "clock ticking cinematic")
+
+    def test_visual_queries_expand_abstract_script_keywords_into_concrete_scenes(self):
+        agent = MediaAgent.__new__(MediaAgent)
+        queries = agent._build_visual_queries(
+            {
+                "hook": "You are hiding again.",
+                "body": "The mirror knows what comfort keeps delaying.",
+                "outro": "Face it before it owns you.",
+                "pexels_arama_temasi": "darkness",
+                "pexels_anahtar_kelimeleri": ["man", "shadow", "mirror"],
+            }
+        )
+
+        joined = " | ".join(queries)
+        self.assertIn("person alone in dark room dramatic shadow close up", joined)
+        self.assertIn("man close up face under pressure cinematic portrait", joined)
+        self.assertIn("person staring into mirror tense face close up", joined)
+        self.assertNotIn("man dark cinematic portrait motivation human close up motion", queries)
+
+    def test_visual_queries_prefer_ordered_video_scene_plan(self):
+        agent = MediaAgent.__new__(MediaAgent)
+        queries = agent._build_visual_queries(
+            {
+                "pexels_arama_temasi": "ignored theme",
+                "pexels_anahtar_kelimeleri": ["ignored keyword"],
+                "video_sahneleri": [
+                    "person underwater reaching toward surface",
+                    "hand pressed against wet glass close up",
+                    "person alone in dark room resisting phone procrastination",
+                    "stressed office worker head in hands close up",
+                    "athlete training alone dark gym discipline close up",
+                    "person staring into mirror tense face close up",
+                ],
+            }
+        )
+
+        self.assertEqual(len(queries), 6)
+        self.assertIn("person underwater reaching toward surface", queries[0])
+        self.assertIn("person staring into mirror tense face close up", queries[-1])
+        self.assertNotIn("ignored theme", " | ".join(queries))
+
+    def test_scene_query_groups_use_media_plan_with_backup_queries(self):
+        agent = MediaAgent.__new__(MediaAgent)
+
+        groups = agent._build_scene_query_groups(
+            {
+                "media_plan": {
+                    "video_scenes": [
+                        {
+                            "scene_id": 1,
+                            "search_query": "stressed person close up eye contact",
+                            "backup_queries": ["tense face dramatic lighting"],
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual(len(groups), 1)
+        self.assertIn("stressed person close up eye contact", groups[0][0])
+        self.assertIn("tense face dramatic lighting", groups[0][1])
+        self.assertIn("cinematic", groups[0][0])
+
+    def test_vertical_provider_query_keeps_scene_specific_terms(self):
+        cases = {
+            "stressed person under pressure eye contact dark cinematic portrait motivation human close up motion": "stressed person vertical",
+            "man looking at blank computer screen dark cinematic portrait motivation human close up motion": "office computer vertical",
+            "empty wallet on table dark cinematic portrait motivation human close up motion": "wallet table vertical",
+            "person standing on edge of diving board hesitant dark cinematic portrait motivation human close up motion": "diving board vertical",
+            "close up of hands shaking with anxiety dark cinematic portrait motivation human motion": "anxious hands vertical",
+            "person looking through rainy window dark cinematic portrait motivation human close up motion": "rainy window person vertical",
+            "man shouting in frustration alone dark cinematic portrait motivation human close up motion": "angry person vertical",
+            "extreme close up eyes narrowing dark cinematic portrait motivation human motion": "eyes close up vertical",
+        }
+
+        for raw_query, provider_query in cases.items():
+            with self.subTest(raw_query=raw_query):
+                self.assertEqual(_vertical_provider_query(raw_query), provider_query)
 
     def test_video_search_filters_approved_history_without_marking_new_ids(self):
         service = PexelsVideoService("key", "assets")
@@ -72,6 +160,119 @@ class MediaAgentQueryTests(unittest.TestCase):
         )
 
         self.assertEqual(best["link"], "portrait-hd")
+
+    def test_pixabay_video_search_returns_prefixed_ids_and_best_vertical_url(self):
+        service = PixabayVideoService("key", "assets")
+        response = types.SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "hits": [
+                    {
+                        "id": 456,
+                        "videos": {
+                            "large": {"width": 1920, "height": 1080, "url": "landscape"},
+                            "medium": {"width": 1080, "height": 1920, "url": "portrait"},
+                        },
+                    }
+                ]
+            },
+        )
+
+        with (
+            patch("src.services.video_service.requests.get", return_value=response, create=True) as get,
+            patch("src.services.video_service.is_video_used", return_value=False),
+        ):
+            self.assertEqual(service.search_videos(["discipline"], count=1), [("pixabay_456", "portrait")])
+
+        self.assertEqual(get.call_args.kwargs["params"]["q"], "discipline vertical")
+
+    def test_multi_source_video_search_fills_missing_pexels_results_from_pixabay(self):
+        primary = types.SimpleNamespace(
+            search_videos=lambda queries, count=6: [("pexels_1", "pexels-url")],
+            download_video=lambda url, filename: "pexels-path",
+        )
+        fallback = types.SimpleNamespace(
+            search_videos=lambda queries, count=6: [("pixabay_2", "pixabay-url")],
+            download_video=lambda url, filename: "pixabay-path",
+        )
+        service = MultiSourceVideoService(primary, [fallback])
+
+        self.assertEqual(
+            service.search_videos(["discipline"], count=2),
+            [("pexels_1", "pexels-url"), ("pixabay_2", "pixabay-url")],
+        )
+
+    def test_multi_source_video_search_ranks_candidates_across_all_providers(self):
+        primary = types.SimpleNamespace(
+            search_candidates=lambda queries, count=6: [VideoCandidate("pexels_1", "pexels-url", 3.0, "pexels")],
+            download_video=lambda url, filename: "pexels-path",
+        )
+        pixabay = types.SimpleNamespace(
+            search_candidates=lambda queries, count=6: [VideoCandidate("pixabay_2", "pixabay-url", 9.0, "pixabay")],
+            download_video=lambda url, filename: "pixabay-path",
+        )
+        coverr = types.SimpleNamespace(
+            search_candidates=lambda queries, count=6: [VideoCandidate("coverr_3", "coverr-url", 6.0, "coverr")],
+            download_video=lambda url, filename: "coverr-path",
+        )
+        service = MultiSourceVideoService(primary, [pixabay, coverr])
+
+        self.assertEqual(
+            service.search_videos(["discipline"], count=2),
+            [("pixabay_2", "pixabay-url"), ("coverr_3", "coverr-url")],
+        )
+
+    def test_coverr_video_search_uses_bearer_auth_and_download_url(self):
+        service = CoverrVideoService("key", "assets")
+        response = types.SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "hits": [
+                    {
+                        "id": "abc123",
+                        "is_vertical": True,
+                        "urls": {
+                            "mp4": "stream-url",
+                            "mp4_download": "download-url",
+                        },
+                    }
+                ]
+            },
+        )
+
+        with (
+            patch("src.services.video_service.requests.get", return_value=response, create=True) as get,
+            patch("src.services.video_service.is_video_used", return_value=False),
+        ):
+            self.assertEqual(service.search_videos(["discipline"], count=1), [("coverr_abc123", "download-url")])
+
+        self.assertEqual(get.call_args.kwargs["headers"]["Authorization"], "Bearer key")
+        self.assertTrue(get.call_args.kwargs["params"]["urls"])
+        self.assertEqual(get.call_args.kwargs["params"]["query"], "discipline vertical")
+
+    def test_pixabay_video_search_rejects_landscape_only_results(self):
+        service = PixabayVideoService("key", "assets")
+        response = types.SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "hits": [
+                    {
+                        "id": 456,
+                        "tags": "gym, discipline",
+                        "videos": {
+                            "large": {"width": 1920, "height": 1080, "url": "landscape"},
+                            "medium": {"width": 1280, "height": 720, "url": "landscape-medium"},
+                        },
+                    }
+                ]
+            },
+        )
+
+        with (
+            patch("src.services.video_service.requests.get", return_value=response, create=True),
+            patch("src.services.video_service.is_video_used", return_value=False),
+        ):
+            self.assertEqual(service.search_videos(["discipline"], count=1), [])
 
     def test_music_search_tries_broader_fallback_queries(self):
         service = FreesoundMusicService("key", "assets")
