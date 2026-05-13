@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Awaitable, Callable
+
 from langgraph.graph import END, StateGraph
 
 from src.agents.content_agent import ContentAgent
@@ -16,15 +18,25 @@ from src.services.music_service import FreesoundMusicService
 from src.services.publish_schedule_service import PublishScheduleService
 from src.services.render_service import RenderService
 from src.services.telegram_service import TelegramService
-from src.services.video_service import PexelsVideoService
+from src.services.tiktok_upload_service import TikTokUploadService
+from src.services.video_service import CoverrVideoService, MultiSourceVideoService, PexelsVideoService, PixabayVideoService
 from src.services.youtube_upload_service import YouTubeUploadService
 from src.workflows.nodes import VideoWorkflowNodes
 from src.workflows.router import route_after_feedback
 
 
-def create_workflow(settings: Settings):
+FeedbackMessageProvider = Callable[[int], Awaitable[str | None]]
+
+
+def create_workflow(settings: Settings, feedback_message_provider: FeedbackMessageProvider | None = None):
     content_service = GeminiContentService(settings.gemini_api_key, settings.gemini_model)
-    video_service = PexelsVideoService(settings.pexels_api_key, settings.assets_dir)
+    video_service = MultiSourceVideoService(
+        PexelsVideoService(settings.pexels_api_key, settings.assets_dir),
+        [
+            PixabayVideoService(settings.pixabay_api_key, settings.assets_dir),
+            CoverrVideoService(settings.coverr_api_key, settings.assets_dir),
+        ],
+    )
     music_service = FreesoundMusicService(settings.freesound_api_key, settings.assets_dir)
     publish_schedule_service = PublishScheduleService()
     render_service = RenderService(settings.assets_dir, settings.outputs_dir, settings.fps)
@@ -42,15 +54,27 @@ def create_workflow(settings: Settings):
         settings.instagram_graph_api_version,
         settings.instagram_share_to_feed,
     )
+    tiktok_upload_service = TikTokUploadService(
+        settings.tiktok_client_key,
+        settings.tiktok_client_secret,
+        settings.tiktok_redirect_uri,
+        settings.tiktok_token_path,
+        settings.tiktok_default_privacy_level,
+        settings.tiktok_disable_comment,
+        settings.tiktok_disable_duet,
+        settings.tiktok_disable_stitch,
+        settings.tiktok_is_aigc,
+    )
 
     nodes = VideoWorkflowNodes(
         content_agent=ContentAgent(content_service),
         media_agent=MediaAgent(video_service, music_service),
         render_agent=RenderAgent(render_service),
-        feedback_agent=FeedbackAgent(telegram_service, analyzer),
+        feedback_agent=FeedbackAgent(telegram_service, analyzer, message_provider=feedback_message_provider),
         outputs_dir=settings.outputs_dir,
         youtube_upload_service=youtube_upload_service,
         instagram_upload_service=instagram_upload_service,
+        tiktok_upload_service=tiktok_upload_service,
         publish_schedule_service=publish_schedule_service,
     )
 
