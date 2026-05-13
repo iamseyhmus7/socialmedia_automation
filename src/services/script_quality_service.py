@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from src.domain.media import concrete_visual_query
+
 
 CLICHE_PHRASES = {
     "believe in yourself",
@@ -62,7 +64,6 @@ VISUAL_TERMS = {
     "focus",
 }
 
-
 @dataclass(frozen=True)
 class ScriptQualityResult:
     script: dict[str, Any]
@@ -73,43 +74,100 @@ class ScriptQualityResult:
 class ScriptQualityService:
     def normalize_script(self, script_data: dict[str, Any]) -> dict[str, Any]:
         script = dict(script_data)
-        hook = str(script.get("hook") or script.get("shock_hook") or "").strip()
-        body = str(script.get("body") or script.get("tension_body") or "").strip()
-        outro = str(script.get("outro") or script.get("payoff_outro") or "").strip()
-        loop_ending = str(script.get("loop_ending") or "").strip()
+        script_section = dict(script.get("script") or {})
+        voice_plan = dict(script.get("voice_plan") or {})
+        media_plan = dict(script.get("media_plan") or {})
+        publishing = dict(script.get("publishing") or {})
+
+        hook = str(script_section.get("hook") or script.get("hook") or script.get("shock_hook") or "").strip()
+        body = str(script_section.get("body") or script.get("body") or script.get("tension_body") or "").strip()
+        outro = str(script_section.get("outro") or script.get("outro") or script.get("payoff_outro") or "").strip()
+        loop_ending = str(script_section.get("loop_ending") or script.get("loop_ending") or "").strip()
 
         script["hook"] = hook
         script["body"] = body
         script["outro"] = outro
-        script["shock_hook"] = str(script.get("shock_hook") or hook).strip()
-        script["tension_body"] = str(script.get("tension_body") or body).strip()
-        script["payoff_outro"] = str(script.get("payoff_outro") or outro).strip()
+        script["shock_hook"] = str(script_section.get("shock_hook") or script.get("shock_hook") or hook).strip()
+        script["tension_body"] = str(script_section.get("tension_body") or script.get("tension_body") or body).strip()
+        script["payoff_outro"] = str(script_section.get("payoff_outro") or script.get("payoff_outro") or outro).strip()
         script["loop_ending"] = loop_ending or self._derive_loop_ending(hook, outro)
         script["style"] = str(script.get("style") or "aggressive_viral_motivation")
 
-        highlighted = list(script.get("vurgulanacak_kelimeler") or [])
+        highlighted = list(voice_plan.get("highlighted_words") or script.get("vurgulanacak_kelimeler") or [])
         if not highlighted:
             highlighted = self._default_highlights(script)
         script["vurgulanacak_kelimeler"] = highlighted[:4]
 
+        visual_direction = dict(media_plan.get("visual_direction") or {})
+        music_plan = dict(media_plan.get("music") or {})
+        video_scene_plan = list(media_plan.get("video_scenes") or [])
         if not script.get("hook_pexels_arama_terimi"):
-            script["hook_pexels_arama_terimi"] = self._opening_visual_term(script)
+            first_scene = video_scene_plan[0] if video_scene_plan and isinstance(video_scene_plan[0], dict) else {}
+            script["hook_pexels_arama_terimi"] = first_scene.get("search_query") or self._opening_visual_term(script)
         if not script.get("pexels_arama_temasi"):
-            script["pexels_arama_temasi"] = "human discipline under pressure dark cinematic"
+            script["pexels_arama_temasi"] = (
+                visual_direction.get("overall_theme")
+                or visual_direction.get("mood")
+                or "human discipline under pressure dark cinematic"
+            )
         if not script.get("pexels_anahtar_kelimeleri"):
+            scene_queries = [
+                str(scene.get("search_query", ""))
+                for scene in video_scene_plan
+                if isinstance(scene, dict) and scene.get("search_query")
+            ]
             script["pexels_anahtar_kelimeleri"] = [
+                *scene_queries[:3],
                 "intense face close up eye contact",
                 "athlete struggle alone dark gym",
                 "disciplined person fast motion cinematic",
-            ]
+            ][:5]
+        if not script.get("video_sahneleri"):
+            script["video_sahneleri"] = self._scene_queries_from_plan(video_scene_plan) or self._derive_video_scenes(script)
+        script["hook_pexels_arama_terimi"] = concrete_visual_query(script.get("hook_pexels_arama_terimi"))
+        script["pexels_arama_temasi"] = concrete_visual_query(script.get("pexels_arama_temasi"))
+        script["pexels_anahtar_kelimeleri"] = [
+            concrete_visual_query(query)
+            for query in list(script.get("pexels_anahtar_kelimeleri") or [])
+        ][:5]
+        script["video_sahneleri"] = self._normalize_video_scenes(script.get("video_sahneleri"), script)
         if not script.get("freesound_arama_terimi"):
-            script["freesound_arama_terimi"] = "dark cinematic motivational emotional build no vocals"
+            script["freesound_arama_terimi"] = (
+                music_plan.get("search_query") or "dark cinematic motivational emotional build no vocals"
+            )
         if not script.get("youtube_title"):
-            script["youtube_title"] = self._youtube_title(script)
+            script["youtube_title"] = publishing.get("youtube_title") or self._youtube_title(script)
         if not script.get("youtube_description"):
-            script["youtube_description"] = self._youtube_description(script)
+            script["youtube_description"] = publishing.get("youtube_description") or self._youtube_description(script)
         if not script.get("youtube_tags"):
-            script["youtube_tags"] = ["motivation", "shorts", "discipline", "mindset", "stoicism"]
+            script["youtube_tags"] = publishing.get("youtube_tags") or [
+                "motivation",
+                "shorts",
+                "discipline",
+                "mindset",
+                "stoicism",
+            ]
+
+        script["script"] = {
+            "shock_hook": script["shock_hook"],
+            "tension_body": script["tension_body"],
+            "payoff_outro": script["payoff_outro"],
+            "loop_ending": script["loop_ending"],
+            "hook": script["hook"],
+            "body": script["body"],
+            "outro": script["outro"],
+        }
+        script["voice_plan"] = {
+            "highlighted_words": script["vurgulanacak_kelimeler"],
+            "tone": str(voice_plan.get("tone") or "intense"),
+            "pace": str(voice_plan.get("pace") or "fast_then_controlled"),
+        }
+        script["media_plan"] = self._normalized_media_plan(script, media_plan)
+        script["publishing"] = {
+            "youtube_title": script["youtube_title"],
+            "youtube_description": script["youtube_description"],
+            "youtube_tags": script["youtube_tags"],
+        }
 
         scores = self.score(script)
         script.update(scores)
@@ -197,6 +255,8 @@ class ScriptQualityService:
             reasons.append("Loop ending is missing.")
         if not script_data.get("vurgulanacak_kelimeler"):
             reasons.append("Highlighted words are missing.")
+        if len(script_data.get("video_sahneleri") or []) != 6:
+            reasons.append("Six video scenes are required.")
         if script_data.get("quality_score", 0) < 0.62:
             reasons.append("Quality score is below the render gate.")
         return not reasons, reasons
@@ -223,6 +283,124 @@ class ScriptQualityService:
     def _opening_visual_term(self, script_data: dict[str, Any]) -> str:
         hook = str(script_data.get("hook", "")).strip()
         return f"{hook} intense human face close up eye contact struggle fast motion dark cinematic portrait"
+
+    def _normalize_video_scenes(self, scenes: Any, script_data: dict[str, Any]) -> list[str]:
+        normalized = []
+        for scene in list(scenes or []):
+            query_value = scene.get("search_query") if isinstance(scene, dict) else scene
+            query = concrete_visual_query(query_value)
+            if query and query not in normalized:
+                normalized.append(query)
+
+        for scene in self._derive_video_scenes(script_data):
+            if len(normalized) >= 6:
+                break
+            query = concrete_visual_query(scene)
+            if query not in normalized:
+                normalized.append(query)
+        return normalized[:6]
+
+    def _derive_video_scenes(self, script_data: dict[str, Any]) -> list[str]:
+        text = " ".join(str(script_data.get(key, "")) for key in ["hook", "body", "outro"]).lower()
+        scenes = [
+            self._opening_visual_term(script_data),
+            str(script_data.get("pexels_arama_temasi") or "person alone under pressure close up eye contact"),
+        ]
+        if "water" in text or "drown" in text or "suffocat" in text:
+            scenes.extend(
+                [
+                    "person underwater reaching toward surface",
+                    "hand pressed against wet glass close up",
+                ]
+            )
+        if "comfort" in text or "phone" in text or "scroll" in text:
+            scenes.extend(
+                [
+                    "person alone in dark room resisting phone procrastination",
+                    "stressed person sitting on bed in dark room close up",
+                ]
+            )
+        if "mirror" in text:
+            scenes.append("person staring into mirror tense face close up")
+        if "office" in text or "work" in text:
+            scenes.append("stressed office worker head in hands close up")
+        if "discipline" in text or "train" in text or "gym" in text:
+            scenes.append("athlete training alone dark gym discipline close up")
+        scenes.extend(
+            [
+                "stressed person under pressure close up eye contact",
+                "exhausted athlete close up sweat breathing under pressure",
+                "person walking alone at night dark cinematic",
+            ]
+        )
+        return scenes
+
+    def _scene_queries_from_plan(self, scenes: list[Any]) -> list[str]:
+        queries = []
+        for scene in scenes:
+            if isinstance(scene, dict):
+                query = scene.get("search_query")
+            else:
+                query = scene
+            if query:
+                queries.append(str(query))
+        return queries
+
+    def _normalized_media_plan(self, script: dict[str, Any], media_plan: dict[str, Any]) -> dict[str, Any]:
+        visual_direction = dict(media_plan.get("visual_direction") or {})
+        visual_direction.setdefault("overall_theme", script["pexels_arama_temasi"])
+        visual_direction.setdefault("mood", "dark cinematic human struggle")
+        visual_direction.setdefault("color_style", "low key contrast, muted colors")
+        visual_direction.setdefault("avoid", ["text overlays", "brands", "celebrities", "cartoons", "visual metaphors"])
+
+        existing_scenes = list(media_plan.get("video_scenes") or [])
+        normalized_scenes = []
+        for index, query in enumerate(script["video_sahneleri"], start=1):
+            source = existing_scenes[index - 1] if index - 1 < len(existing_scenes) and isinstance(existing_scenes[index - 1], dict) else {}
+            normalized_scenes.append(
+                {
+                    "scene_id": int(source.get("scene_id") or index),
+                    "beat": str(source.get("beat") or self._beat_for_scene(index)),
+                    "line_match": str(source.get("line_match") or self._line_for_scene(script, index)),
+                    "search_query": query,
+                    "backup_queries": [
+                        concrete_visual_query(item)
+                        for item in list(source.get("backup_queries") or [])
+                        if str(item).strip()
+                    ][:3],
+                    "emotion": str(source.get("emotion") or "intensity"),
+                    "camera": str(source.get("camera") or "close up"),
+                    "pace": str(source.get("pace") or ("fast" if index == 1 else "controlled")),
+                }
+            )
+
+        music = dict(media_plan.get("music") or {})
+        return {
+            "visual_direction": visual_direction,
+            "video_scenes": normalized_scenes,
+            "music": {
+                "search_query": script["freesound_arama_terimi"],
+                "backup_queries": list(music.get("backup_queries") or [])[:3],
+                "mood": str(music.get("mood") or "dark cinematic motivational emotional build"),
+                "volume_hint": music.get("volume_hint", 0.55),
+            },
+        }
+
+    def _beat_for_scene(self, index: int) -> str:
+        if index == 1:
+            return "hook"
+        if index <= 4:
+            return "body"
+        if index == 5:
+            return "outro"
+        return "loop"
+
+    def _line_for_scene(self, script: dict[str, Any], index: int) -> str:
+        if index == 1:
+            return str(script.get("hook") or "")
+        if index <= 4:
+            return str(script.get("body") or "")
+        return str(script.get("outro") or script.get("loop_ending") or "")
 
     def _youtube_title(self, script_data: dict[str, Any]) -> str:
         title = str(script_data.get("hook") or "Daily Motivation").strip()
