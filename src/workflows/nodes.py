@@ -2,13 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import os
 from typing import TYPE_CHECKING
 
-from database import get_youtube_metadata, record_approved_state, save_youtube_metadata
+from database import (
+    get_youtube_metadata,
+    get_youtube_publish_times,
+    record_approved_state,
+    record_tiktok_upload,
+    record_youtube_upload,
+    save_tiktok_metadata,
+    save_youtube_metadata,
+)
 from src.domain.feedback import FeedbackAction
 from src.domain.state import WorkflowState
 from src.services.publish_schedule_service import PublishScheduleService
+from src.services.render_brief_service import build_render_brief
 from src.services.video_metadata_service import build_upload_metadata
 
 if TYPE_CHECKING:
@@ -17,6 +27,7 @@ if TYPE_CHECKING:
     from src.agents.media_agent import MediaAgent
     from src.agents.render_agent import RenderAgent
     from src.services.instagram_upload_service import InstagramUploadService
+    from src.services.tiktok_upload_service import TikTokUploadService
     from src.services.youtube_upload_service import YouTubeUploadService
 
 
@@ -30,6 +41,7 @@ class VideoWorkflowNodes:
         outputs_dir: str,
         youtube_upload_service: "YouTubeUploadService | None" = None,
         instagram_upload_service: "InstagramUploadService | None" = None,
+        tiktok_upload_service: "TikTokUploadService | None" = None,
         publish_schedule_service: "PublishScheduleService | None" = None,
     ):
         self.content_agent = content_agent
@@ -39,20 +51,30 @@ class VideoWorkflowNodes:
         self.outputs_dir = outputs_dir
         self.youtube_upload_service = youtube_upload_service
         self.instagram_upload_service = instagram_upload_service
+        self.tiktok_upload_service = tiktok_upload_service
         self.publish_schedule_service = publish_schedule_service or PublishScheduleService()
 
     async def generate_initial_script(self, state: WorkflowState) -> dict:
         print("\n[NODE] Generating script...", flush=True)
-        script_data = self.content_agent.generate_script()
+        script_data = await asyncio.to_thread(self.content_agent.generate_script)
         return self._script_update(state, script_data)
 
     async def download_initial_videos(self, state: WorkflowState) -> dict:
         print("\n[NODE] Downloading initial videos...", flush=True)
-        return {"video_paths": self.media_agent.download_initial_videos(state["script_data"])}
+        script_data = state["script_data"]
+        video_paths = await asyncio.to_thread(self.media_agent.download_initial_videos, script_data)
+        return {
+            "media_brief": self.media_agent.media_brief(script_data),
+            "video_paths": video_paths,
+        }
 
     async def download_initial_music(self, state: WorkflowState) -> dict:
         print("\n[NODE] Downloading initial music...", flush=True)
-        music_path, tried_ids = self.media_agent.download_music(state["script_data"], state.get("tried_music_ids", []))
+        music_path, tried_ids = await asyncio.to_thread(
+            self.media_agent.download_music,
+            state["script_data"],
+            state.get("tried_music_ids", []),
+        )
         return {"music_path": music_path, "tried_music_ids": tried_ids}
 
     async def apply_feedback_actions(self, state: WorkflowState) -> dict:
@@ -62,16 +84,21 @@ class VideoWorkflowNodes:
 
         script_actions = [action for action in actions if action.type == "edit_script"]
         if script_actions:
-            script_data = self.content_agent.edit_script(state["script_data"], script_actions)
+            script_data = await asyncio.to_thread(self.content_agent.edit_script, state["script_data"], script_actions)
             updates.update(self._script_update(state, script_data))
 
         video_actions = [action for action in actions if action.type == "edit_video"]
         if video_actions:
-            updates["video_paths"] = self.media_agent.apply_video_actions(state.get("video_paths", []), video_actions)
+            updates["video_paths"] = await asyncio.to_thread(
+                self.media_agent.apply_video_actions,
+                state.get("video_paths", []),
+                video_actions,
+            )
 
         music_actions = [action for action in actions if action.type == "retry_music"]
         if music_actions:
-            music_path, tried_ids = self.media_agent.download_music(
+            music_path, tried_ids = await asyncio.to_thread(
+                self.media_agent.download_music,
                 updates.get("script_data") or state["script_data"],
                 state.get("tried_music_ids", []),
             )
@@ -80,7 +107,7 @@ class VideoWorkflowNodes:
 
         render_actions = [action for action in actions if action.type == "retry_render"]
         if render_actions:
-            updates["music_volume"] = self._apply_render_settings(state.get("music_volume", 1.25), render_actions)
+            updates["music_volume"] = self._apply_render_settings(state.get("music_volume", 1.00), render_actions)
 
         updates["pending_actions"] = []
         updates["status"] = "changes_applied"
@@ -94,19 +121,18 @@ class VideoWorkflowNodes:
         output_filename = self._build_output_filename(date_folder, timestamp, revision)
         voice_filename = f"voice_{timestamp}_r{revision:02d}.mp3"
 
-        audio_path, final_video_path = await self.render_agent.render(
-            state.get("video_paths", []),
-            state["script_text"],
-            state.get("music_path"),
-            output_filename,
-            voice_filename,
-            state.get("vurgulanacak_kelimeler", []),
-            state.get("music_volume", 1.25),
-        )
+        render_brief = build_render_brief(state, output_filename, voice_filename)
+        audio_path, final_video_path = await self.render_agent.render_from_brief(render_brief)
         self._remove_legacy_revision_outputs(date_folder, timestamp)
         if final_video_path:
             metadata = build_upload_metadata(state.get("script_data") or {})
             save_youtube_metadata(
+                final_video_path,
+                metadata["title"],
+                metadata["description"],
+                metadata["tags"],
+            )
+            save_tiktok_metadata(
                 final_video_path,
                 metadata["title"],
                 metadata["description"],
@@ -118,6 +144,7 @@ class VideoWorkflowNodes:
             "revision": revision,
             "timestamp": timestamp,
             "date_folder": date_folder,
+            "render_brief": render_brief,
             "status": "rendered",
         }
 
@@ -126,8 +153,10 @@ class VideoWorkflowNodes:
         video_path = state["final_video_path"]
         file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
         caption = f"Video hazir ({file_size_mb:.1f} MB). Komutunuz?"
-        self.feedback_agent.send_review_video(video_path, caption=caption)
+        await asyncio.to_thread(self.feedback_agent.send_review_video, video_path, caption=caption)
         plan = self.feedback_agent.wait_for_feedback(video_count=len(state.get("video_paths", [])), timeout_minutes=15)
+        if inspect.isawaitable(plan):
+            plan = await plan
 
         if plan.status == "approved":
             record_approved_state(state, niche="motivation")
@@ -163,12 +192,13 @@ class VideoWorkflowNodes:
         }
 
     def _script_update(self, state: WorkflowState, script_data: dict) -> dict:
+        script_section = dict(script_data.get("script") or {})
         script_text = "\n".join(
             part
             for part in [
-                script_data.get("hook", ""),
-                script_data.get("body", ""),
-                script_data.get("outro", ""),
+                script_section.get("hook") or script_data.get("hook", ""),
+                script_section.get("body") or script_data.get("body", ""),
+                script_section.get("outro") or script_data.get("outro", ""),
             ]
             if part
         )
@@ -209,7 +239,10 @@ class VideoWorkflowNodes:
 
     async def _upload_approved_video(self, state: WorkflowState) -> dict:
         try:
-            publish_at = self.publish_schedule_service.next_publish_at(state.get("date_folder"))
+            publish_at = self.publish_schedule_service.next_publish_at(
+                state.get("date_folder"),
+                occupied_publish_times=get_youtube_publish_times(),
+            )
         except Exception as exc:
             return {
                 "upload_status": "failed",
@@ -221,13 +254,18 @@ class VideoWorkflowNodes:
                 "instagram_upload_error": str(exc),
                 "instagram_media_id": None,
                 "instagram_url": None,
+                "tiktok_upload_status": "failed",
+                "tiktok_upload_error": str(exc),
+                "tiktok_publish_id": None,
+                "tiktok_publish_at": None,
             }
 
-        youtube_update, instagram_update = await asyncio.gather(
+        youtube_update, instagram_update, tiktok_update = await asyncio.gather(
             self._upload_approved_video_to_youtube(state, publish_at),
             self._upload_approved_video_to_instagram(state),
+            self._schedule_approved_video_for_tiktok(state, publish_at),
         )
-        return {**youtube_update, **instagram_update}
+        return {**youtube_update, **instagram_update, **tiktok_update}
 
     async def _upload_approved_video_to_youtube(self, state: WorkflowState, publish_at: str | None = None) -> dict:
         if self.youtube_upload_service is None:
@@ -260,6 +298,13 @@ class VideoWorkflowNodes:
             print(f"  [YOUTUBE] Scheduled: {result.youtube_url} (public at {local_publish_at})", flush=True)
         else:
             print(f"  [YOUTUBE] Uploaded: {result.youtube_url}", flush=True)
+        record_youtube_upload(
+            video_path,
+            result.video_id,
+            result.youtube_url,
+            result.publish_at,
+            "scheduled" if result.publish_at else "uploaded",
+        )
         return {
             "upload_status": "uploaded",
             "upload_error": None,
@@ -324,3 +369,43 @@ class VideoWorkflowNodes:
         if youtube_metadata and youtube_metadata.get("description"):
             return self.instagram_upload_service.build_metadata(caption=youtube_metadata["description"]).caption
         return self.instagram_upload_service.build_metadata(state.get("script_data") or {}).caption
+
+    async def _schedule_approved_video_for_tiktok(self, state: WorkflowState, publish_at: str | None) -> dict:
+        tiktok_upload_service = getattr(self, "tiktok_upload_service", None)
+        if tiktok_upload_service is None:
+            return {
+                "tiktok_upload_status": "skipped",
+                "tiktok_upload_error": "TikTok upload service is not configured.",
+                "tiktok_publish_id": None,
+                "tiktok_publish_at": None,
+            }
+        if not tiktok_upload_service.is_configured():
+            return {
+                "tiktok_upload_status": "skipped",
+                "tiktok_upload_error": "TikTok client key/secret is not configured.",
+                "tiktok_publish_id": None,
+                "tiktok_publish_at": None,
+            }
+
+        video_path = state.get("final_video_path")
+        if not video_path:
+            return {
+                "tiktok_upload_status": "failed",
+                "tiktok_upload_error": "No final video path is available for upload.",
+                "tiktok_publish_id": None,
+                "tiktok_publish_at": None,
+            }
+
+        record_tiktok_upload(video_path, publish_at=publish_at, status="scheduled")
+        local_publish_at = self.publish_schedule_service.format_local_datetime(publish_at) if publish_at else "now"
+        print(
+            f"  [TIKTOK] Queued locally for Direct Post at {local_publish_at}. "
+            "It will not appear in TikTok Studio until the due publisher uploads it.",
+            flush=True,
+        )
+        return {
+            "tiktok_upload_status": "scheduled",
+            "tiktok_upload_error": None,
+            "tiktok_publish_id": None,
+            "tiktok_publish_at": publish_at,
+        }
