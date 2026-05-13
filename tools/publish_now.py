@@ -9,7 +9,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from database import get_youtube_metadata
+from database import get_youtube_metadata, get_youtube_publish_times, record_youtube_upload
 from src.core.settings import get_settings
 from src.services.publish_now_service import PublishNowConfig, PublishNowService
 from src.services.publish_schedule_service import PublishScheduleService
@@ -29,16 +29,6 @@ def parse_args() -> argparse.Namespace:
         "--date",
         default=None,
         help="Date folder under YOUTUBE_UPLOADS_DIR, for example 2026-05-08.",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Upload the publishable generated videos in the selected date directory.",
-    )
-    parser.add_argument(
-        "--all-mp4",
-        action="store_true",
-        help="Upload every .mp4 file in the selected date directory, including manual revision files.",
     )
     parser.add_argument(
         "--latest",
@@ -67,20 +57,9 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--slots",
-        default=None,
-        help="Comma-separated schedule slots for --all. Overrides the weekday/weekend schedule profile.",
-    )
-    parser.add_argument(
-        "--schedule-profile",
-        choices=["auto", "weekday", "weekend"],
-        default=PublishScheduleService.DEFAULT_SCHEDULE_PROFILE,
-        help="Schedule profile to use when --slots is not provided. Auto chooses by the selected date folder.",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the selected videos and schedule without uploading.",
+        help="Print the selected video without uploading.",
     )
     return parser.parse_args()
 
@@ -95,16 +74,12 @@ def config_from_args(args: argparse.Namespace, settings) -> PublishNowConfig:
         upload_dir=requested_dir,
         date_folder=args.date,
         video_path=args.video_path,
-        all_videos=args.all,
-        all_mp4=args.all_mp4,
         latest=args.latest,
         title=args.title,
         description=args.description,
         tags=tags,
         privacy=args.privacy,
         publish_at=args.publish_at,
-        slots=args.slots,
-        schedule_profile=args.schedule_profile,
         dry_run=args.dry_run,
     )
 
@@ -126,6 +101,14 @@ def create_publish_service(settings) -> PublishNowService:
         youtube_service,
         schedule_service=PublishScheduleService(),
         metadata_provider=get_youtube_metadata,
+        occupied_publish_times_provider=get_youtube_publish_times,
+        upload_recorder=lambda video_path, result: record_youtube_upload(
+            video_path,
+            result.video_id,
+            result.youtube_url,
+            result.publish_at,
+            "scheduled" if result.publish_at else "uploaded",
+        ),
     )
 
 
