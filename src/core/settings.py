@@ -29,6 +29,8 @@ class Settings:
     outputs_dir: str
     db_path: str
     pexels_api_key: str | None
+    pixabay_api_key: str | None
+    coverr_api_key: str | None
     freesound_api_key: str | None
     gemini_api_key: str | None
     telegram_bot_token: str | None
@@ -42,6 +44,15 @@ class Settings:
     instagram_user_id: str | None = None
     instagram_graph_api_version: str = "v24.0"
     instagram_share_to_feed: bool = True
+    tiktok_client_key: str | None = None
+    tiktok_client_secret: str | None = None
+    tiktok_redirect_uri: str = "http://localhost:8080/tiktok/callback"
+    tiktok_token_path: str = ""
+    tiktok_default_privacy_level: str = "SELF_ONLY"
+    tiktok_disable_comment: bool = False
+    tiktok_disable_duet: bool = False
+    tiktok_disable_stitch: bool = False
+    tiktok_is_aigc: bool = True
     video_width: int = 1080
     video_height: int = 1920
     fps: int = 30
@@ -62,12 +73,18 @@ def get_settings() -> Settings:
         base_dir,
         os.getenv("YOUTUBE_UPLOADS_DIR", "outputs"),
     )
+    tiktok_token_path = _resolve_path(
+        base_dir,
+        os.getenv("TIKTOK_TOKEN_PATH", os.path.join("user_data", "tiktok_token.json")),
+    )
     return Settings(
         base_dir=base_dir,
         assets_dir=os.path.join(base_dir, "assets"),
         outputs_dir=os.path.join(base_dir, "outputs"),
         db_path=os.path.join(base_dir, "video_history.db"),
         pexels_api_key=os.getenv("PEXELS_API_KEY"),
+        pixabay_api_key=os.getenv("PIXABAY_API_KEY"),
+        coverr_api_key=os.getenv("COVERR_API_KEY"),
         freesound_api_key=os.getenv("FREESOUND_API_KEY"),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
@@ -81,6 +98,15 @@ def get_settings() -> Settings:
         instagram_user_id=os.getenv("INSTAGRAM_USER_ID"),
         instagram_graph_api_version=os.getenv("INSTAGRAM_GRAPH_API_VERSION", "v24.0"),
         instagram_share_to_feed=_env_bool("INSTAGRAM_SHARE_TO_FEED", True),
+        tiktok_client_key=os.getenv("TIKTOK_CLIENT_KEY"),
+        tiktok_client_secret=os.getenv("TIKTOK_CLIENT_SECRET"),
+        tiktok_redirect_uri=os.getenv("TIKTOK_REDIRECT_URI", "http://localhost:8080/tiktok/callback"),
+        tiktok_token_path=tiktok_token_path,
+        tiktok_default_privacy_level=os.getenv("TIKTOK_DEFAULT_PRIVACY_LEVEL", "SELF_ONLY"),
+        tiktok_disable_comment=_env_bool("TIKTOK_DISABLE_COMMENT", False),
+        tiktok_disable_duet=_env_bool("TIKTOK_DISABLE_DUET", False),
+        tiktok_disable_stitch=_env_bool("TIKTOK_DISABLE_STITCH", False),
+        tiktok_is_aigc=_env_bool("TIKTOK_IS_AIGC", True),
     )
 
 
