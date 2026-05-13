@@ -54,6 +54,7 @@ class Database:
                 )
                 """
             )
+            self._ensure_column(cursor, "used_music", "source", "TEXT DEFAULT 'freesound'")
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS used_scripts (
@@ -85,6 +86,51 @@ class Database:
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS youtube_uploads (
+                    id INTEGER PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    youtube_video_id TEXT,
+                    youtube_url TEXT,
+                    publish_at TEXT,
+                    status TEXT DEFAULT 'scheduled',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_uploads_publish_at ON youtube_uploads(publish_at)")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tiktok_metadata (
+                    id INTEGER PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    tags_json TEXT DEFAULT '[]',
+                    status TEXT DEFAULT 'ready',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tiktok_uploads (
+                    id INTEGER PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    tiktok_publish_id TEXT,
+                    tiktok_url TEXT,
+                    publish_at TEXT,
+                    status TEXT DEFAULT 'scheduled',
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tiktok_uploads_publish_at ON tiktok_uploads(publish_at)")
             cursor.execute("UPDATE used_music SET status = 'approved' WHERE status IS NULL")
             cursor.execute("UPDATE used_scripts SET status = 'approved' WHERE status IS NULL")
             cursor.execute("DROP TABLE IF EXISTS used_voiceovers")
@@ -106,22 +152,32 @@ class Database:
             return cursor.fetchone() is not None
 
     def mark_video_as_used(self, pexels_id, niche, asset_path=None, final_video_path=None, status="approved"):
+        source = self._video_source(pexels_id)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO used_videos (pexels_id, niche, source, status, asset_path, final_video_path)
-                VALUES (?, ?, 'pexels', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(pexels_id) DO UPDATE SET
                     niche = excluded.niche,
+                    source = excluded.source,
                     status = excluded.status,
                     asset_path = excluded.asset_path,
                     final_video_path = excluded.final_video_path,
                     used_at = CURRENT_TIMESTAMP
                 """,
-                (pexels_id, niche, status, asset_path, final_video_path),
+                (pexels_id, niche, source, status, asset_path, final_video_path),
             )
             conn.commit()
+
+    def _video_source(self, pexels_id):
+        value = str(pexels_id)
+        if value.startswith("pixabay_"):
+            return "pixabay"
+        if value.startswith("coverr_"):
+            return "coverr"
+        return "pexels"
 
     def is_music_used(self, freesound_id):
         with self._get_connection() as conn:
@@ -133,23 +189,28 @@ class Database:
             return cursor.fetchone() is not None
 
     def mark_music_as_used(self, freesound_id, query=None, name=None, asset_path=None, final_video_path=None, status="approved"):
+        source = self._music_source(freesound_id)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO used_music (freesound_id, query, name, asset_path, final_video_path, status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO used_music (freesound_id, query, name, asset_path, final_video_path, status, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(freesound_id) DO UPDATE SET
                     query = excluded.query,
                     name = excluded.name,
                     asset_path = excluded.asset_path,
                     final_video_path = excluded.final_video_path,
                     status = excluded.status,
+                    source = excluded.source,
                     used_at = CURRENT_TIMESTAMP
                 """,
-                (freesound_id, query, name, asset_path, final_video_path, status),
+                (freesound_id, query, name, asset_path, final_video_path, status, source),
             )
             conn.commit()
+
+    def _music_source(self, music_id):
+        return "freesound"
 
     def script_fingerprint(self, script_data):
         hook = str(script_data.get("hook", ""))
@@ -295,6 +356,218 @@ class Database:
             "tags": tags,
         }
 
+    def record_youtube_upload(
+        self,
+        final_video_path,
+        youtube_video_id=None,
+        youtube_url=None,
+        publish_at=None,
+        status="scheduled",
+    ):
+        final_video_path = os.path.abspath(final_video_path)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO youtube_uploads (final_video_path, youtube_video_id, youtube_url, publish_at, status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(final_video_path) DO UPDATE SET
+                    youtube_video_id = excluded.youtube_video_id,
+                    youtube_url = excluded.youtube_url,
+                    publish_at = excluded.publish_at,
+                    status = excluded.status,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (final_video_path, youtube_video_id, youtube_url, publish_at, status),
+            )
+            conn.commit()
+
+    def get_youtube_publish_times(self, statuses=("scheduled", "uploaded")):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _status in statuses)
+            cursor.execute(
+                f"""
+                SELECT publish_at
+                FROM youtube_uploads
+                WHERE publish_at IS NOT NULL
+                  AND status IN ({placeholders})
+                """,
+                tuple(statuses),
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
+
+    def is_youtube_publish_time_occupied(self, publish_at, statuses=("scheduled", "uploaded")):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _status in statuses)
+            cursor.execute(
+                f"""
+                SELECT 1
+                FROM youtube_uploads
+                WHERE publish_at = ?
+                  AND status IN ({placeholders})
+                LIMIT 1
+                """,
+                (publish_at, *statuses),
+            )
+            return cursor.fetchone() is not None
+
+    def save_tiktok_metadata(self, final_video_path, title, description="", tags=None, status="ready"):
+        final_video_path = os.path.abspath(final_video_path)
+        tags = tags or []
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO tiktok_metadata (final_video_path, title, description, tags_json, status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(final_video_path) DO UPDATE SET
+                    title = excluded.title,
+                    description = excluded.description,
+                    tags_json = excluded.tags_json,
+                    status = excluded.status,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (final_video_path, title, description or "", json.dumps(tags, ensure_ascii=False), status),
+            )
+            conn.commit()
+
+    def get_tiktok_metadata(self, final_video_path):
+        final_video_path = os.path.abspath(final_video_path)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT title, description, tags_json
+                FROM tiktok_metadata
+                WHERE final_video_path = ?
+                """,
+                (final_video_path,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return self.get_youtube_metadata(final_video_path)
+
+        title, description, tags_json = row
+        try:
+            tags = json.loads(tags_json or "[]")
+        except json.JSONDecodeError:
+            tags = []
+        if not isinstance(tags, list):
+            tags = []
+        return {"title": title, "description": description or "", "tags": tags}
+
+    def record_tiktok_upload(
+        self,
+        final_video_path,
+        tiktok_publish_id=None,
+        tiktok_url=None,
+        publish_at=None,
+        status="scheduled",
+        error=None,
+    ):
+        final_video_path = os.path.abspath(final_video_path)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO tiktok_uploads (
+                    final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(final_video_path) DO UPDATE SET
+                    tiktok_publish_id = excluded.tiktok_publish_id,
+                    tiktok_url = excluded.tiktok_url,
+                    publish_at = excluded.publish_at,
+                    status = excluded.status,
+                    error = excluded.error,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error),
+            )
+            conn.commit()
+
+    def get_tiktok_publish_times(self, statuses=("scheduled", "uploaded", "processing")):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _status in statuses)
+            cursor.execute(
+                f"""
+                SELECT publish_at
+                FROM tiktok_uploads
+                WHERE publish_at IS NOT NULL
+                  AND status IN ({placeholders})
+                """,
+                tuple(statuses),
+            )
+            return [row[0] for row in cursor.fetchall() if row[0]]
+
+    def is_tiktok_publish_time_occupied(self, publish_at, statuses=("scheduled", "uploaded", "processing")):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _status in statuses)
+            cursor.execute(
+                f"""
+                SELECT 1
+                FROM tiktok_uploads
+                WHERE publish_at = ?
+                  AND status IN ({placeholders})
+                LIMIT 1
+                """,
+                (publish_at, *statuses),
+            )
+            return cursor.fetchone() is not None
+
+    def get_due_tiktok_uploads(self, now_utc):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT final_video_path, publish_at
+                FROM tiktok_uploads
+                WHERE status = 'scheduled'
+                  AND publish_at IS NOT NULL
+                  AND publish_at <= ?
+                ORDER BY publish_at ASC
+                """,
+                (now_utc,),
+            )
+            return [{"final_video_path": row[0], "publish_at": row[1]} for row in cursor.fetchall()]
+
+    def get_scheduled_uploads(self, limit=20):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT platform, final_video_path, publish_at, status
+                FROM (
+                    SELECT 'YouTube' AS platform, final_video_path, publish_at, status
+                    FROM youtube_uploads
+                    WHERE publish_at IS NOT NULL
+                      AND status = 'scheduled'
+                    UNION ALL
+                    SELECT 'TikTok' AS platform, final_video_path, publish_at, status
+                    FROM tiktok_uploads
+                    WHERE publish_at IS NOT NULL
+                      AND status = 'scheduled'
+                )
+                ORDER BY publish_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [
+                {
+                    "platform": row[0],
+                    "final_video_path": row[1],
+                    "publish_at": row[2],
+                    "status": row[3],
+                }
+                for row in cursor.fetchall()
+            ]
+
     def record_approved_state(self, state, niche="motivation"):
         final_video_path = state.get("final_video_path")
         script_data = state.get("script_data")
@@ -361,6 +634,53 @@ def save_youtube_metadata(final_video_path, title, description="", tags=None, st
 
 def get_youtube_metadata(final_video_path):
     return Database().get_youtube_metadata(final_video_path)
+
+
+def record_youtube_upload(final_video_path, youtube_video_id=None, youtube_url=None, publish_at=None, status="scheduled"):
+    Database().record_youtube_upload(final_video_path, youtube_video_id, youtube_url, publish_at, status)
+
+
+def get_youtube_publish_times(statuses=("scheduled", "uploaded")):
+    return Database().get_youtube_publish_times(statuses)
+
+
+def is_youtube_publish_time_occupied(publish_at, statuses=("scheduled", "uploaded")):
+    return Database().is_youtube_publish_time_occupied(publish_at, statuses)
+
+
+def save_tiktok_metadata(final_video_path, title, description="", tags=None, status="ready"):
+    Database().save_tiktok_metadata(final_video_path, title, description, tags, status)
+
+
+def get_tiktok_metadata(final_video_path):
+    return Database().get_tiktok_metadata(final_video_path)
+
+
+def record_tiktok_upload(
+    final_video_path,
+    tiktok_publish_id=None,
+    tiktok_url=None,
+    publish_at=None,
+    status="scheduled",
+    error=None,
+):
+    Database().record_tiktok_upload(final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error)
+
+
+def get_tiktok_publish_times(statuses=("scheduled", "uploaded", "processing")):
+    return Database().get_tiktok_publish_times(statuses)
+
+
+def is_tiktok_publish_time_occupied(publish_at, statuses=("scheduled", "uploaded", "processing")):
+    return Database().is_tiktok_publish_time_occupied(publish_at, statuses)
+
+
+def get_due_tiktok_uploads(now_utc):
+    return Database().get_due_tiktok_uploads(now_utc)
+
+
+def get_scheduled_uploads(limit=20):
+    return Database().get_scheduled_uploads(limit)
 
 
 def record_approved_state(state, niche="motivation"):
