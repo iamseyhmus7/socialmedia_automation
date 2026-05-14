@@ -10,8 +10,17 @@ from src.core.settings import get_settings
 
 
 class Database:
-    def __init__(self):
-        self.db_path = get_settings().db_path
+    def __new__(cls):
+        settings = get_settings()
+        database_url = getattr(settings, "database_url", None)
+        if database_url and database_url.startswith(("postgresql://", "postgres://")):
+            return PostgresDatabase(database_url)
+        return SQLiteDatabase(getattr(settings, "db_path"))
+
+
+class SQLiteDatabase:
+    def __init__(self, db_path=None):
+        self.db_path = db_path or get_settings().db_path
         self._init_db()
 
     @contextmanager
@@ -536,6 +545,24 @@ class Database:
             )
             return [{"final_video_path": row[0], "publish_at": row[1]} for row in cursor.fetchall()]
 
+    def get_next_scheduled_tiktok_upload(self):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT final_video_path, publish_at
+                FROM tiktok_uploads
+                WHERE status = 'scheduled'
+                  AND publish_at IS NOT NULL
+                ORDER BY publish_at ASC
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {"final_video_path": row[0], "publish_at": row[1]}
+
     def get_scheduled_uploads(self, limit=20):
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -602,6 +629,182 @@ class Database:
             return None
         value = filename[len(prefix):].split(".", 1)[0]
         return value or None
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+
+    def execute(self, sql, params=None):
+        self.cursor.execute(sql.replace("?", "%s"), params)
+        return self
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+
+class PostgresDatabase(SQLiteDatabase):
+    def __init__(self, database_url):
+        self.database_url = database_url
+        self._init_db()
+
+    def _init_db(self):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS used_videos (
+                    id BIGSERIAL PRIMARY KEY,
+                    pexels_id TEXT UNIQUE,
+                    niche TEXT,
+                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._ensure_column(cursor, "used_videos", "source", "TEXT DEFAULT 'pexels'")
+            self._ensure_column(cursor, "used_videos", "status", "TEXT DEFAULT 'approved'")
+            self._ensure_column(cursor, "used_videos", "asset_path", "TEXT")
+            self._ensure_column(cursor, "used_videos", "final_video_path", "TEXT")
+            cursor.execute("UPDATE used_videos SET status = 'approved' WHERE status IS NULL")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS used_music (
+                    id BIGSERIAL PRIMARY KEY,
+                    freesound_id TEXT UNIQUE,
+                    query TEXT,
+                    name TEXT,
+                    asset_path TEXT,
+                    final_video_path TEXT,
+                    status TEXT DEFAULT 'approved',
+                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._ensure_column(cursor, "used_music", "source", "TEXT DEFAULT 'freesound'")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS used_scripts (
+                    id BIGSERIAL PRIMARY KEY,
+                    script_hash TEXT UNIQUE,
+                    hook_hash TEXT,
+                    theme_hash TEXT,
+                    hook TEXT,
+                    body TEXT,
+                    outro TEXT,
+                    script_json TEXT,
+                    final_video_path TEXT,
+                    status TEXT DEFAULT 'approved',
+                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS youtube_metadata (
+                    id BIGSERIAL PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    tags_json TEXT DEFAULT '[]',
+                    status TEXT DEFAULT 'ready',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS youtube_uploads (
+                    id BIGSERIAL PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    youtube_video_id TEXT,
+                    youtube_url TEXT,
+                    publish_at TEXT,
+                    status TEXT DEFAULT 'scheduled',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_uploads_publish_at ON youtube_uploads(publish_at)")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tiktok_metadata (
+                    id BIGSERIAL PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    tags_json TEXT DEFAULT '[]',
+                    status TEXT DEFAULT 'ready',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tiktok_uploads (
+                    id BIGSERIAL PRIMARY KEY,
+                    final_video_path TEXT UNIQUE NOT NULL,
+                    tiktok_publish_id TEXT,
+                    tiktok_url TEXT,
+                    publish_at TEXT,
+                    status TEXT DEFAULT 'scheduled',
+                    error TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tiktok_uploads_publish_at ON tiktok_uploads(publish_at)")
+            cursor.execute("UPDATE used_music SET status = 'approved' WHERE status IS NULL")
+            cursor.execute("UPDATE used_scripts SET status = 'approved' WHERE status IS NULL")
+            cursor.execute("DROP TABLE IF EXISTS used_voiceovers")
+            conn.commit()
+
+    def _ensure_column(self, cursor, table_name, column_name, definition):
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ?
+              AND column_name = ?
+            """,
+            (table_name, column_name),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+    def _get_connection(self):
+        return self._postgres_connection()
+
+    @contextmanager
+    def _postgres_connection(self):
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise RuntimeError("psycopg paketi kurulu degil. `pip install -r requirements.txt` calistirin.") from exc
+
+        conn = psycopg.connect(self.database_url)
+        try:
+            yield PostgresConnection(conn)
+        finally:
+            conn.close()
+
+
+class PostgresConnection:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def cursor(self):
+        return PostgresCursor(self.conn.cursor())
+
+    def commit(self):
+        self.conn.commit()
 
 
 def init_db():
@@ -677,6 +880,10 @@ def is_tiktok_publish_time_occupied(publish_at, statuses=("scheduled", "uploaded
 
 def get_due_tiktok_uploads(now_utc):
     return Database().get_due_tiktok_uploads(now_utc)
+
+
+def get_next_scheduled_tiktok_upload():
+    return Database().get_next_scheduled_tiktok_upload()
 
 
 def get_scheduled_uploads(limit=20):
