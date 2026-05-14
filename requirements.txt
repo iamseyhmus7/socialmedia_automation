@@ -14,6 +14,7 @@ faster-whisper
 # Web & API
 requests
 python-dotenv
+psycopg[binary]
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
