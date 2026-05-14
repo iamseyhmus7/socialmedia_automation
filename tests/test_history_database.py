@@ -125,6 +125,10 @@ class HistoryDatabaseTests(unittest.TestCase):
             db.get_due_tiktok_uploads("2026-05-09T10:00:00Z"),
             [{"final_video_path": os.path.abspath(video_path), "publish_at": "2026-05-09T10:00:00Z"}],
         )
+        self.assertEqual(
+            db.get_next_scheduled_tiktok_upload(),
+            {"final_video_path": os.path.abspath(video_path), "publish_at": "2026-05-09T10:00:00Z"},
+        )
 
     def test_script_similarity_blocks_near_duplicate_approved_scripts(self):
         db = database.Database()
