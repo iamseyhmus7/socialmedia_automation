@@ -98,6 +98,19 @@ class TikTokUploadServiceTests(unittest.TestCase):
 
         self.assertEqual(challenge, "bKE9UspwyIPg8LsQHkJaiehiTeUdstI5JZOvaoQRgJA")
 
+    def test_save_token_accepts_plain_file_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                service = TikTokUploadService("client-key", "secret", "http://localhost:8080/tiktok/callback", "token.json")
+
+                service._save_token({"access_token": "token", "expires_in": 3600})
+
+                self.assertTrue(os.path.exists("token.json"))
+            finally:
+                os.chdir(cwd)
+
 
 if __name__ == "__main__":
     unittest.main()
