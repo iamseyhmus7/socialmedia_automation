@@ -316,7 +316,9 @@ class TikTokUploadService:
         token = dict(payload)
         if token.get("access_token") and token.get("expires_in"):
             token["expires_at"] = time.time() + int(token["expires_in"])
-        os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
+        token_dir = os.path.dirname(self.token_path)
+        if token_dir:
+            os.makedirs(token_dir, exist_ok=True)
         with open(self.token_path, "w", encoding="utf-8") as token_file:
             json.dump(token, token_file, ensure_ascii=False, indent=2)
 
