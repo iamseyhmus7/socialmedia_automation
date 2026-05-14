@@ -20,7 +20,15 @@ from moviepy import (
 )
 
 
-FONT_PATH = "C:/Windows/Fonts/impact.ttf"
+FONT_PATH = os.getenv("SUBTITLE_FONT_PATH", "C:/Windows/Fonts/impact.ttf")
+FONT_CANDIDATES = [
+    FONT_PATH,
+    "C:/Windows/Fonts/impact.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+]
 FONT_SIZE_NORMAL = 100
 FONT_SIZE_HOOK = 124
 FONT_SIZE_HIGHLIGHT = 116
@@ -210,7 +218,7 @@ class RenderService:
         size = preferred_size
         while size >= 64:
             try:
-                font = ImageFont.truetype(FONT_PATH, size)
+                font = self._load_subtitle_font(size)
             except OSError:
                 return ImageFont.load_default()
             width = font.getbbox(display_text)[2] - font.getbbox(display_text)[0]
@@ -218,9 +226,15 @@ class RenderService:
                 return font
             size -= 6
         try:
-            return ImageFont.truetype(FONT_PATH, 64)
+            return self._load_subtitle_font(64)
         except OSError:
             return ImageFont.load_default()
+
+    def _load_subtitle_font(self, size: int):
+        for font_path in FONT_CANDIDATES:
+            if font_path and os.path.exists(font_path):
+                return ImageFont.truetype(font_path, size)
+        raise OSError("No subtitle font found. Set SUBTITLE_FONT_PATH or install a bold TrueType font.")
 
     def _process_clip(self, video_path: str, target_duration: float, is_opening: bool = False):
         clip = VideoFileClip(video_path)
