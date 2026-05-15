@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from src.domain.media import concrete_visual_query
@@ -69,6 +69,8 @@ class ScriptQualityResult:
     script: dict[str, Any]
     valid: bool
     reasons: list[str]
+    score: float = 0.0
+    report: dict[str, Any] = field(default_factory=dict)
 
 
 class ScriptQualityService:
@@ -171,17 +173,32 @@ class ScriptQualityService:
 
         scores = self.score(script)
         script.update(scores)
+        valid, reasons = self.validate(script, include_score_gate=False)
+        script["quality_report"] = self.quality_report(script, valid=valid, reasons=reasons)
         return script
 
     def select_best(self, candidates: list[dict[str, Any]]) -> ScriptQualityResult:
         normalized = [self.normalize_script(candidate) for candidate in candidates if isinstance(candidate, dict)]
         if not normalized:
-            return ScriptQualityResult(script={}, valid=False, reasons=["No valid script candidates were returned."])
+            return ScriptQualityResult(
+                script={},
+                valid=False,
+                reasons=["No valid script candidates were returned."],
+                report={"grade": "F", "score": 0.0, "reasons": ["No valid script candidates were returned."]},
+            )
 
         ranked = sorted(normalized, key=lambda item: item.get("quality_score", 0), reverse=True)
         best = ranked[0]
         valid, reasons = self.validate(best)
-        return ScriptQualityResult(script=best, valid=valid, reasons=reasons)
+        report = self.quality_report(best, valid=valid, reasons=reasons)
+        best["quality_report"] = report
+        return ScriptQualityResult(
+            script=best,
+            valid=valid,
+            reasons=reasons,
+            score=float(best.get("quality_score", 0.0)),
+            report=report,
+        )
 
     def score(self, script_data: dict[str, Any]) -> dict[str, float]:
         hook = str(script_data.get("hook", ""))
@@ -239,7 +256,7 @@ class ScriptQualityService:
             "quality_score": round(quality_score, 3),
         }
 
-    def validate(self, script_data: dict[str, Any]) -> tuple[bool, list[str]]:
+    def validate(self, script_data: dict[str, Any], include_score_gate: bool = True) -> tuple[bool, list[str]]:
         reasons = []
         hook_words = self._words(str(script_data.get("hook", "")))
         total_words = self._words(" ".join(str(script_data.get(key, "")) for key in ["hook", "body", "outro"]))
@@ -257,9 +274,36 @@ class ScriptQualityService:
             reasons.append("Highlighted words are missing.")
         if len(script_data.get("video_sahneleri") or []) != 6:
             reasons.append("Six video scenes are required.")
-        if script_data.get("quality_score", 0) < 0.62:
+        if include_score_gate and script_data.get("quality_score", 0) < 0.62:
             reasons.append("Quality score is below the render gate.")
         return not reasons, reasons
+
+    def quality_report(self, script_data: dict[str, Any], valid: bool | None = None, reasons: list[str] | None = None) -> dict[str, Any]:
+        if valid is None or reasons is None:
+            valid, reasons = self.validate(script_data)
+
+        score = float(script_data.get("quality_score", 0.0))
+        components = {
+            "hook": float(script_data.get("hook_score", 0.0)),
+            "retention": float(script_data.get("retention_score", 0.0)),
+            "cliche": float(script_data.get("cliche_score", 0.0)),
+            "visual": float(script_data.get("visual_score", 0.0)),
+            "loop": float(script_data.get("loop_score", 0.0)),
+        }
+        strengths = self._quality_strengths(components)
+        risks = self._quality_risks(components, reasons)
+        return {
+            "score": round(score, 3),
+            "grade": self._quality_grade(score, valid),
+            "valid": valid,
+            "components": components,
+            "strengths": strengths,
+            "risks": risks,
+            "reasons": reasons,
+            "word_count": len(self._words(" ".join(str(script_data.get(key, "")) for key in ["hook", "body", "outro"]))),
+            "hook_word_count": len(self._words(str(script_data.get("hook", "")))),
+            "scene_count": len(script_data.get("video_sahneleri") or []),
+        }
 
     def find_cliches(self, text: str) -> list[str]:
         lowered = self._normalize(text)
@@ -430,6 +474,41 @@ class ScriptQualityService:
         if not hook_words or not loop_words:
             return 0.0
         return min(1.0, len(hook_words & loop_words) / 2)
+
+    def _quality_grade(self, score: float, valid: bool) -> str:
+        if not valid:
+            return "F"
+        if score >= 0.82:
+            return "A"
+        if score >= 0.72:
+            return "B"
+        if score >= 0.62:
+            return "C"
+        return "D"
+
+    def _quality_strengths(self, components: dict[str, float]) -> list[str]:
+        labels = {
+            "hook": "Strong hook structure",
+            "retention": "Good retention arc",
+            "cliche": "Low cliche risk",
+            "visual": "Concrete visual direction",
+            "loop": "Loop ending ties back to hook",
+        }
+        return [labels[key] for key, value in components.items() if value >= 0.75]
+
+    def _quality_risks(self, components: dict[str, float], reasons: list[str]) -> list[str]:
+        risks = list(reasons)
+        labels = {
+            "hook": "Hook may be weak or incorrectly sized.",
+            "retention": "Retention arc may lack tension or target word count.",
+            "cliche": "Cliche language risk is high.",
+            "visual": "Visual direction may be too abstract.",
+            "loop": "Loop ending may not strongly reconnect to the hook.",
+        }
+        for key, value in components.items():
+            if value < 0.55 and labels[key] not in risks:
+                risks.append(labels[key])
+        return risks
 
     def _words(self, text: str) -> list[str]:
         return re.findall(r"[A-Za-z']+", str(text or ""))
