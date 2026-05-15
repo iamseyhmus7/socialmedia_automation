@@ -12,6 +12,11 @@ class BotCommandType(str, Enum):
     PAUSE = "pause"
     RESUME = "resume"
     QUEUE = "queue"
+    QUEUE_DETAIL = "queue_detail"
+    QUEUE_EXPIRED = "queue_expired"
+    QUEUE_CLEANUP = "queue_cleanup"
+    CANCEL = "cancel"
+    RESCHEDULE = "reschedule"
     PUBLISH_DUE = "publish_due"
     UNKNOWN = "unknown"
 
@@ -21,6 +26,8 @@ class BotCommand:
     type: BotCommandType
     raw_text: str
     count: int | None = None
+    queue_id: str | None = None
+    publish_at: str | None = None
     error: str | None = None
 
     @property
@@ -36,6 +43,11 @@ COMMAND_HELP: tuple[tuple[str, str], ...] = (
     ("/pause", "Yeni ise baslamaz, mevcut isi bitirip bekler."),
     ("/resume", "Devam eder."),
     ("/queue", "Planlanan YouTube/TikTok yayinlari gosterir."),
+    ("/queue_detail", "Planlanan yayinlari queue id ve ayrintilarla gosterir."),
+    ("/queue_expired", "Gecmiste kalmis ama scheduled gorunen yayinlari listeler."),
+    ("/queue_cleanup", "Gecmiste kalmis scheduled yayinlari expired olarak isaretler."),
+    ("/cancel youtube:12", "Planlanan bir yayini iptal eder."),
+    ("/reschedule youtube:12 2026-05-16 17:30", "Planlanan bir yayinin saatini degistirir."),
     ("/publish_due", "Zamani gelen yayinlari elle tetikler."),
 )
 
@@ -50,6 +62,10 @@ def parse_bot_command(text: str | None) -> BotCommand:
 
     if name == BotCommandType.GENERATE.value:
         return _parse_generate(raw_text, parts)
+    if name == BotCommandType.CANCEL.value:
+        return _parse_cancel(raw_text, parts)
+    if name == BotCommandType.RESCHEDULE.value:
+        return _parse_reschedule(raw_text, parts)
     if name == "generating":
         return BotCommand(
             BotCommandType.UNKNOWN,
@@ -64,6 +80,9 @@ def parse_bot_command(text: str | None) -> BotCommand:
         BotCommandType.PAUSE.value: BotCommandType.PAUSE,
         BotCommandType.RESUME.value: BotCommandType.RESUME,
         BotCommandType.QUEUE.value: BotCommandType.QUEUE,
+        BotCommandType.QUEUE_DETAIL.value: BotCommandType.QUEUE_DETAIL,
+        BotCommandType.QUEUE_EXPIRED.value: BotCommandType.QUEUE_EXPIRED,
+        BotCommandType.QUEUE_CLEANUP.value: BotCommandType.QUEUE_CLEANUP,
         BotCommandType.PUBLISH_DUE.value: BotCommandType.PUBLISH_DUE,
     }
     command_type = simple_commands.get(name)
@@ -90,3 +109,19 @@ def _parse_generate(raw_text: str, parts: list[str]) -> BotCommand:
     if count < 1:
         return BotCommand(BotCommandType.GENERATE, raw_text, error="/generate count must be at least 1.")
     return BotCommand(BotCommandType.GENERATE, raw_text, count=count)
+
+
+def _parse_cancel(raw_text: str, parts: list[str]) -> BotCommand:
+    if len(parts) != 2:
+        return BotCommand(BotCommandType.CANCEL, raw_text, error="/cancel requires a queue id, for example /cancel youtube:12.")
+    return BotCommand(BotCommandType.CANCEL, raw_text, queue_id=parts[1])
+
+
+def _parse_reschedule(raw_text: str, parts: list[str]) -> BotCommand:
+    if len(parts) < 3:
+        return BotCommand(
+            BotCommandType.RESCHEDULE,
+            raw_text,
+            error="/reschedule requires a queue id and time, for example /reschedule youtube:12 2026-05-16 17:30.",
+        )
+    return BotCommand(BotCommandType.RESCHEDULE, raw_text, queue_id=parts[1], publish_at=" ".join(parts[2:]))
