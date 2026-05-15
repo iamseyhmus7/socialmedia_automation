@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from src.domain.feedback import FeedbackAction
 from src.domain.media import concrete_visual_query, dedupe_queries
 from src.services.music_service import FreesoundMusicService
-from src.services.video_service import CoverrVideoService, MultiSourceVideoService, PexelsVideoService
+from src.services.video_service import CoverrVideoService, MultiSourceVideoService, PexelsVideoService, VideoAssetValidator
 
 
 MUSIC_QUERY_NOISE_TERMS = {
@@ -22,38 +24,36 @@ MUSIC_QUERY_NOISE_TERMS = {
     "with",
 }
 
+logger = logging.getLogger(__name__)
+
 
 class MediaAgent:
     def __init__(
         self,
         video_service: PexelsVideoService | MultiSourceVideoService | CoverrVideoService,
         music_service: FreesoundMusicService,
+        video_validator: VideoAssetValidator | None = None,
     ):
         self.video_service = video_service
         self.music_service = music_service
+        self.video_validator = video_validator or VideoAssetValidator()
 
     def download_initial_videos(self, script_data: dict) -> list[str]:
         scene_query_groups = self._build_scene_query_groups(script_data)
-        video_list = []
+        paths = []
         selected_ids = set()
         for queries in scene_query_groups:
-            scene_videos = self.video_service.search_videos(queries, count=1)
-            for video_id, video_url in scene_videos:
-                if video_id in selected_ids:
-                    continue
-                video_list.append((video_id, video_url))
-                selected_ids.add(video_id)
-                break
+            path = self._download_first_valid_video(queries, selected_ids, count=4)
+            if path:
+                paths.append(path)
 
-        remaining_count = 6 - len(video_list)
+        remaining_count = 6 - len(paths)
         if remaining_count > 0:
             fallback_queries = self._build_visual_queries(script_data)
-            video_list.extend(self.video_service.search_videos(fallback_queries, count=remaining_count))
-
-        paths = []
-        for index, (video_id, video_url) in enumerate(video_list):
-            print(f"  [VIDEO] Downloading ({index + 1}/{len(video_list)}): {video_id}", flush=True)
-            paths.append(self.video_service.download_video(video_url, f"raw_{video_id}.mp4"))
+            for path in self._download_valid_videos(fallback_queries, selected_ids, count=remaining_count * 3):
+                paths.append(path)
+                if len(paths) >= 6:
+                    break
         return paths
 
     def media_brief(self, script_data: dict) -> dict:
@@ -212,15 +212,15 @@ class MediaAgent:
         music_query = ""
         for raw_query in [music_plan["search_query"], *music_plan["backup_queries"]]:
             music_query = self._music_query(raw_query)
-            print(f"  [MUSIC] Query: {music_query}", flush=True)
+            logger.info("Music query: %s", music_query)
             music_id, music_url = self.music_service.search_music(music_query, exclude_ids=tried_music_ids)
             if music_url:
                 break
         if not music_url:
-            print("  [MUSIC] No background music was downloaded; render will continue with voiceover only.", flush=True)
+            logger.warning("No background music was downloaded; render will continue with voiceover only")
             return None, tried_music_ids
         music_path = self.music_service.download_music(music_url, f"music_{music_id}.mp3")
-        print(f"  [MUSIC] Ready: {music_path}", flush=True)
+        logger.info("Music ready: %s", music_path)
         return music_path, tried_music_ids + [str(music_id)]
 
     def _music_plan(self, script_data: dict) -> dict:
@@ -277,4 +277,49 @@ class MediaAgent:
 
     def _download_by_queries(self, queries: list[str], count: int) -> list[str]:
         videos = self.video_service.search_videos(queries, count=count)
-        return [self.video_service.download_video(video_url, f"raw_{video_id}.mp4") for video_id, video_url in videos]
+        selected_ids = set()
+        paths = []
+        for video_id, video_url in videos:
+            if video_id in selected_ids:
+                continue
+            path = self._download_and_validate(video_id, video_url)
+            if not path:
+                continue
+            selected_ids.add(video_id)
+            paths.append(path)
+            if len(paths) >= count:
+                break
+        return paths
+
+    def _download_first_valid_video(self, queries: list[str], selected_ids: set[str], count: int = 4) -> str | None:
+        for path in self._download_valid_videos(queries, selected_ids, count=count):
+            return path
+        return None
+
+    def _download_valid_videos(self, queries: list[str], selected_ids: set[str], count: int) -> list[str]:
+        paths = []
+        for video_id, video_url in self.video_service.search_videos(queries, count=count):
+            if video_id in selected_ids:
+                continue
+            path = self._download_and_validate(video_id, video_url)
+            if not path:
+                continue
+            selected_ids.add(video_id)
+            paths.append(path)
+        return paths
+
+    def _download_and_validate(self, video_id: str, video_url: str) -> str | None:
+        logger.info("Downloading video: %s", video_id)
+        try:
+            path = self.video_service.download_video(video_url, f"raw_{video_id}.mp4")
+        except Exception as exc:
+            logger.warning("Video download failed id=%s error=%s", video_id, exc)
+            return None
+
+        result = self.video_validator.validate(path)
+        if result.valid:
+            logger.info("Video validated id=%s size=%sx%s duration=%.2fs", video_id, result.width, result.height, result.duration)
+            return path
+
+        logger.info("Video rejected id=%s reason=%s", video_id, result.reason)
+        return None
