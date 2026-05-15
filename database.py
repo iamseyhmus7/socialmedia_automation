@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 
@@ -13,149 +12,23 @@ class Database:
     def __new__(cls):
         settings = get_settings()
         database_url = getattr(settings, "database_url", None)
-        if database_url and database_url.startswith(("postgresql://", "postgres://")):
-            return PostgresDatabase(database_url)
-        return SQLiteDatabase(getattr(settings, "db_path"))
+        if not database_url:
+            raise RuntimeError("DATABASE_URL ayarlanmamis. PostgreSQL baglantisi kurulamiyor.")
+        if not database_url.startswith(("postgresql://", "postgres://")):
+            raise RuntimeError("DATABASE_URL PostgreSQL baglanti adresi olmali.")
+        return PostgresDatabase(database_url)
 
 
-class SQLiteDatabase:
-    def __init__(self, db_path=None):
-        self.db_path = db_path or get_settings().db_path
-        self._init_db()
-
+class HistoryDatabase:
     @contextmanager
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-    def _init_db(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS used_videos (
-                    id INTEGER PRIMARY KEY,
-                    pexels_id TEXT UNIQUE,
-                    niche TEXT,
-                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            self._ensure_column(cursor, "used_videos", "source", "TEXT DEFAULT 'pexels'")
-            self._ensure_column(cursor, "used_videos", "status", "TEXT DEFAULT 'approved'")
-            self._ensure_column(cursor, "used_videos", "asset_path", "TEXT")
-            self._ensure_column(cursor, "used_videos", "final_video_path", "TEXT")
-            cursor.execute("UPDATE used_videos SET status = 'approved' WHERE status IS NULL")
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS used_music (
-                    id INTEGER PRIMARY KEY,
-                    freesound_id TEXT UNIQUE,
-                    query TEXT,
-                    name TEXT,
-                    asset_path TEXT,
-                    final_video_path TEXT,
-                    status TEXT DEFAULT 'approved',
-                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            self._ensure_column(cursor, "used_music", "source", "TEXT DEFAULT 'freesound'")
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS used_scripts (
-                    id INTEGER PRIMARY KEY,
-                    script_hash TEXT UNIQUE,
-                    hook_hash TEXT,
-                    theme_hash TEXT,
-                    hook TEXT,
-                    body TEXT,
-                    outro TEXT,
-                    script_json TEXT,
-                    final_video_path TEXT,
-                    status TEXT DEFAULT 'approved',
-                    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS youtube_metadata (
-                    id INTEGER PRIMARY KEY,
-                    final_video_path TEXT UNIQUE NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT DEFAULT '',
-                    tags_json TEXT DEFAULT '[]',
-                    status TEXT DEFAULT 'ready',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS youtube_uploads (
-                    id INTEGER PRIMARY KEY,
-                    final_video_path TEXT UNIQUE NOT NULL,
-                    youtube_video_id TEXT,
-                    youtube_url TEXT,
-                    publish_at TEXT,
-                    status TEXT DEFAULT 'scheduled',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_youtube_uploads_publish_at ON youtube_uploads(publish_at)")
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tiktok_metadata (
-                    id INTEGER PRIMARY KEY,
-                    final_video_path TEXT UNIQUE NOT NULL,
-                    title TEXT NOT NULL,
-                    description TEXT DEFAULT '',
-                    tags_json TEXT DEFAULT '[]',
-                    status TEXT DEFAULT 'ready',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tiktok_uploads (
-                    id INTEGER PRIMARY KEY,
-                    final_video_path TEXT UNIQUE NOT NULL,
-                    tiktok_publish_id TEXT,
-                    tiktok_url TEXT,
-                    publish_at TEXT,
-                    status TEXT DEFAULT 'scheduled',
-                    error TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_tiktok_uploads_publish_at ON tiktok_uploads(publish_at)")
-            cursor.execute("UPDATE used_music SET status = 'approved' WHERE status IS NULL")
-            cursor.execute("UPDATE used_scripts SET status = 'approved' WHERE status IS NULL")
-            cursor.execute("DROP TABLE IF EXISTS used_voiceovers")
-            conn.commit()
-
-    def _ensure_column(self, cursor, table_name, column_name, definition):
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = {row[1] for row in cursor.fetchall()}
-        if column_name not in columns:
-            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+        raise NotImplementedError
 
     def is_video_used(self, pexels_id):
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT 1 FROM used_videos WHERE pexels_id = ? AND (status = 'approved' OR status IS NULL)",
+                "SELECT 1 FROM used_videos WHERE pexels_id = %s AND (status = 'approved' OR status IS NULL)",
                 (pexels_id,),
             )
             return cursor.fetchone() is not None
@@ -167,13 +40,13 @@ class SQLiteDatabase:
             cursor.execute(
                 """
                 INSERT INTO used_videos (pexels_id, niche, source, status, asset_path, final_video_path)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT(pexels_id) DO UPDATE SET
-                    niche = excluded.niche,
-                    source = excluded.source,
-                    status = excluded.status,
-                    asset_path = excluded.asset_path,
-                    final_video_path = excluded.final_video_path,
+                    niche = EXCLUDED.niche,
+                    source = EXCLUDED.source,
+                    status = EXCLUDED.status,
+                    asset_path = EXCLUDED.asset_path,
+                    final_video_path = EXCLUDED.final_video_path,
                     used_at = CURRENT_TIMESTAMP
                 """,
                 (pexels_id, niche, source, status, asset_path, final_video_path),
@@ -192,7 +65,7 @@ class SQLiteDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT 1 FROM used_music WHERE freesound_id = ? AND (status = 'approved' OR status IS NULL)",
+                "SELECT 1 FROM used_music WHERE freesound_id = %s AND (status = 'approved' OR status IS NULL)",
                 (freesound_id,),
             )
             return cursor.fetchone() is not None
@@ -204,14 +77,14 @@ class SQLiteDatabase:
             cursor.execute(
                 """
                 INSERT INTO used_music (freesound_id, query, name, asset_path, final_video_path, status, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(freesound_id) DO UPDATE SET
-                    query = excluded.query,
-                    name = excluded.name,
-                    asset_path = excluded.asset_path,
-                    final_video_path = excluded.final_video_path,
-                    status = excluded.status,
-                    source = excluded.source,
+                    query = EXCLUDED.query,
+                    name = EXCLUDED.name,
+                    asset_path = EXCLUDED.asset_path,
+                    final_video_path = EXCLUDED.final_video_path,
+                    status = EXCLUDED.status,
+                    source = EXCLUDED.source,
                     used_at = CURRENT_TIMESTAMP
                 """,
                 (freesound_id, query, name, asset_path, final_video_path, status, source),
@@ -284,14 +157,14 @@ class SQLiteDatabase:
                 INSERT INTO used_scripts (
                     script_hash, hook_hash, theme_hash, hook, body, outro, script_json, final_video_path, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(script_hash) DO UPDATE SET
-                    hook = excluded.hook,
-                    body = excluded.body,
-                    outro = excluded.outro,
-                    script_json = excluded.script_json,
-                    final_video_path = excluded.final_video_path,
-                    status = excluded.status,
+                    hook = EXCLUDED.hook,
+                    body = EXCLUDED.body,
+                    outro = EXCLUDED.outro,
+                    script_json = EXCLUDED.script_json,
+                    final_video_path = EXCLUDED.final_video_path,
+                    status = EXCLUDED.status,
                     used_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -317,12 +190,12 @@ class SQLiteDatabase:
             cursor.execute(
                 """
                 INSERT INTO youtube_metadata (final_video_path, title, description, tags_json, status)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(final_video_path) DO UPDATE SET
-                    title = excluded.title,
-                    description = excluded.description,
-                    tags_json = excluded.tags_json,
-                    status = excluded.status,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    tags_json = EXCLUDED.tags_json,
+                    status = EXCLUDED.status,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -343,7 +216,7 @@ class SQLiteDatabase:
                 """
                 SELECT title, description, tags_json
                 FROM youtube_metadata
-                WHERE final_video_path = ?
+                WHERE final_video_path = %s
                 """,
                 (final_video_path,),
             )
@@ -379,12 +252,12 @@ class SQLiteDatabase:
             cursor.execute(
                 """
                 INSERT INTO youtube_uploads (final_video_path, youtube_video_id, youtube_url, publish_at, status)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(final_video_path) DO UPDATE SET
-                    youtube_video_id = excluded.youtube_video_id,
-                    youtube_url = excluded.youtube_url,
-                    publish_at = excluded.publish_at,
-                    status = excluded.status,
+                    youtube_video_id = EXCLUDED.youtube_video_id,
+                    youtube_url = EXCLUDED.youtube_url,
+                    publish_at = EXCLUDED.publish_at,
+                    status = EXCLUDED.status,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (final_video_path, youtube_video_id, youtube_url, publish_at, status),
@@ -394,31 +267,29 @@ class SQLiteDatabase:
     def get_youtube_publish_times(self, statuses=("scheduled", "uploaded")):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join("?" for _status in statuses)
             cursor.execute(
-                f"""
+                """
                 SELECT publish_at
                 FROM youtube_uploads
                 WHERE publish_at IS NOT NULL
-                  AND status IN ({placeholders})
+                  AND status = ANY(%s)
                 """,
-                tuple(statuses),
+                (list(statuses),),
             )
             return [row[0] for row in cursor.fetchall() if row[0]]
 
     def is_youtube_publish_time_occupied(self, publish_at, statuses=("scheduled", "uploaded")):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join("?" for _status in statuses)
             cursor.execute(
-                f"""
+                """
                 SELECT 1
                 FROM youtube_uploads
-                WHERE publish_at = ?
-                  AND status IN ({placeholders})
+                WHERE publish_at = %s
+                  AND status = ANY(%s)
                 LIMIT 1
                 """,
-                (publish_at, *statuses),
+                (publish_at, list(statuses)),
             )
             return cursor.fetchone() is not None
 
@@ -430,12 +301,12 @@ class SQLiteDatabase:
             cursor.execute(
                 """
                 INSERT INTO tiktok_metadata (final_video_path, title, description, tags_json, status)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(final_video_path) DO UPDATE SET
-                    title = excluded.title,
-                    description = excluded.description,
-                    tags_json = excluded.tags_json,
-                    status = excluded.status,
+                    title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    tags_json = EXCLUDED.tags_json,
+                    status = EXCLUDED.status,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (final_video_path, title, description or "", json.dumps(tags, ensure_ascii=False), status),
@@ -450,7 +321,7 @@ class SQLiteDatabase:
                 """
                 SELECT title, description, tags_json
                 FROM tiktok_metadata
-                WHERE final_video_path = ?
+                WHERE final_video_path = %s
                 """,
                 (final_video_path,),
             )
@@ -485,13 +356,13 @@ class SQLiteDatabase:
                 INSERT INTO tiktok_uploads (
                     final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT(final_video_path) DO UPDATE SET
-                    tiktok_publish_id = excluded.tiktok_publish_id,
-                    tiktok_url = excluded.tiktok_url,
-                    publish_at = excluded.publish_at,
-                    status = excluded.status,
-                    error = excluded.error,
+                    tiktok_publish_id = EXCLUDED.tiktok_publish_id,
+                    tiktok_url = EXCLUDED.tiktok_url,
+                    publish_at = EXCLUDED.publish_at,
+                    status = EXCLUDED.status,
+                    error = EXCLUDED.error,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error),
@@ -501,31 +372,29 @@ class SQLiteDatabase:
     def get_tiktok_publish_times(self, statuses=("scheduled", "uploaded", "processing")):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join("?" for _status in statuses)
             cursor.execute(
-                f"""
+                """
                 SELECT publish_at
                 FROM tiktok_uploads
                 WHERE publish_at IS NOT NULL
-                  AND status IN ({placeholders})
+                  AND status = ANY(%s)
                 """,
-                tuple(statuses),
+                (list(statuses),),
             )
             return [row[0] for row in cursor.fetchall() if row[0]]
 
     def is_tiktok_publish_time_occupied(self, publish_at, statuses=("scheduled", "uploaded", "processing")):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            placeholders = ",".join("?" for _status in statuses)
             cursor.execute(
-                f"""
+                """
                 SELECT 1
                 FROM tiktok_uploads
-                WHERE publish_at = ?
-                  AND status IN ({placeholders})
+                WHERE publish_at = %s
+                  AND status = ANY(%s)
                 LIMIT 1
                 """,
-                (publish_at, *statuses),
+                (publish_at, list(statuses)),
             )
             return cursor.fetchone() is not None
 
@@ -538,7 +407,7 @@ class SQLiteDatabase:
                 FROM tiktok_uploads
                 WHERE status = 'scheduled'
                   AND publish_at IS NOT NULL
-                  AND publish_at <= ?
+                  AND publish_at <= %s
                 ORDER BY publish_at ASC
                 """,
                 (now_utc,),
@@ -568,32 +437,208 @@ class SQLiteDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT platform, final_video_path, publish_at, status
+                SELECT queue_id, platform, final_video_path, publish_at, status
                 FROM (
-                    SELECT 'YouTube' AS platform, final_video_path, publish_at, status
+                    SELECT 'youtube:' || id AS queue_id, 'YouTube' AS platform, final_video_path, publish_at, status
                     FROM youtube_uploads
                     WHERE publish_at IS NOT NULL
                       AND status = 'scheduled'
                     UNION ALL
-                    SELECT 'TikTok' AS platform, final_video_path, publish_at, status
+                    SELECT 'tiktok:' || id AS queue_id, 'TikTok' AS platform, final_video_path, publish_at, status
                     FROM tiktok_uploads
                     WHERE publish_at IS NOT NULL
                       AND status = 'scheduled'
                 )
                 ORDER BY publish_at ASC
-                LIMIT ?
+                LIMIT %s
                 """,
                 (limit,),
             )
             return [
                 {
-                    "platform": row[0],
-                    "final_video_path": row[1],
-                    "publish_at": row[2],
-                    "status": row[3],
+                    "queue_id": row[0],
+                    "platform": row[1],
+                    "final_video_path": row[2],
+                    "publish_at": row[3],
+                    "status": row[4],
                 }
                 for row in cursor.fetchall()
             ]
+
+    def get_expired_scheduled_uploads(self, now_utc, limit=50):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT queue_id, platform, final_video_path, publish_at, status
+                FROM (
+                    SELECT 'youtube:' || id AS queue_id, 'YouTube' AS platform, final_video_path, publish_at, status
+                    FROM youtube_uploads
+                    WHERE publish_at IS NOT NULL
+                      AND status = 'scheduled'
+                      AND publish_at < %s
+                    UNION ALL
+                    SELECT 'tiktok:' || id AS queue_id, 'TikTok' AS platform, final_video_path, publish_at, status
+                    FROM tiktok_uploads
+                    WHERE publish_at IS NOT NULL
+                      AND status = 'scheduled'
+                      AND publish_at < %s
+                )
+                ORDER BY publish_at ASC
+                LIMIT %s
+                """,
+                (now_utc, now_utc, limit),
+            )
+            return [
+                {
+                    "queue_id": row[0],
+                    "platform": row[1],
+                    "final_video_path": row[2],
+                    "publish_at": row[3],
+                    "status": row[4],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def mark_expired_scheduled_uploads(self, now_utc):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE youtube_uploads
+                SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'scheduled'
+                  AND publish_at IS NOT NULL
+                  AND publish_at < %s
+                RETURNING id
+                """,
+                (now_utc,),
+            )
+            youtube_count = len(cursor.fetchall())
+            cursor.execute(
+                """
+                UPDATE tiktok_uploads
+                SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'scheduled'
+                  AND publish_at IS NOT NULL
+                  AND publish_at < %s
+                RETURNING id
+                """,
+                (now_utc,),
+            )
+            tiktok_count = len(cursor.fetchall())
+            conn.commit()
+            return {"YouTube": youtube_count, "TikTok": tiktok_count, "total": youtube_count + tiktok_count}
+
+    def get_upload_detail(self, queue_id):
+        platform, record_id = self._parse_queue_id(queue_id)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if platform == "youtube":
+                cursor.execute(
+                    """
+                    SELECT id, final_video_path, youtube_video_id, youtube_url, publish_at, status, created_at, updated_at
+                    FROM youtube_uploads
+                    WHERE id = %s
+                    """,
+                    (record_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "queue_id": f"youtube:{row[0]}",
+                    "platform": "YouTube",
+                    "final_video_path": row[1],
+                    "remote_id": row[2],
+                    "remote_url": row[3],
+                    "publish_at": row[4],
+                    "status": row[5],
+                    "created_at": row[6],
+                    "updated_at": row[7],
+                }
+
+            cursor.execute(
+                """
+                SELECT id, final_video_path, tiktok_publish_id, tiktok_url, publish_at, status, error, created_at, updated_at
+                FROM tiktok_uploads
+                WHERE id = %s
+                """,
+                (record_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "queue_id": f"tiktok:{row[0]}",
+                "platform": "TikTok",
+                "final_video_path": row[1],
+                "remote_id": row[2],
+                "remote_url": row[3],
+                "publish_at": row[4],
+                "status": row[5],
+                "error": row[6],
+                "created_at": row[7],
+                "updated_at": row[8],
+            }
+
+    def cancel_scheduled_upload(self, queue_id):
+        platform, record_id = self._parse_queue_id(queue_id)
+        table_name = self._upload_table_for_platform(platform)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE {table_name}
+                SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'scheduled'
+                RETURNING id
+                """,
+                (record_id,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return row is not None
+
+    def reschedule_scheduled_upload(self, queue_id, publish_at):
+        platform, record_id = self._parse_queue_id(queue_id)
+        table_name = self._upload_table_for_platform(platform)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                UPDATE {table_name}
+                SET publish_at = %s, status = 'scheduled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status = 'scheduled'
+                RETURNING id
+                """,
+                (publish_at, record_id),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+            return row is not None
+
+    def _parse_queue_id(self, queue_id):
+        raw = str(queue_id or "").strip().lower()
+        if ":" not in raw:
+            raise ValueError("Queue id formati platform:id olmali. Ornek: youtube:12")
+        platform, raw_id = raw.split(":", 1)
+        if platform not in {"youtube", "tiktok"}:
+            raise ValueError("Queue platformu youtube veya tiktok olmali.")
+        try:
+            record_id = int(raw_id)
+        except ValueError as exc:
+            raise ValueError("Queue id sayisal olmali. Ornek: youtube:12") from exc
+        if record_id < 1:
+            raise ValueError("Queue id pozitif olmali.")
+        return platform, record_id
+
+    def _upload_table_for_platform(self, platform):
+        if platform == "youtube":
+            return "youtube_uploads"
+        if platform == "tiktok":
+            return "tiktok_uploads"
+        raise ValueError("Queue platformu youtube veya tiktok olmali.")
 
     def record_approved_state(self, state, niche="motivation"):
         final_video_path = state.get("final_video_path")
@@ -631,22 +676,7 @@ class SQLiteDatabase:
         return value or None
 
 
-class PostgresCursor:
-    def __init__(self, cursor):
-        self.cursor = cursor
-
-    def execute(self, sql, params=None):
-        self.cursor.execute(sql.replace("?", "%s"), params)
-        return self
-
-    def fetchone(self):
-        return self.cursor.fetchone()
-
-    def fetchall(self):
-        return self.cursor.fetchall()
-
-
-class PostgresDatabase(SQLiteDatabase):
+class PostgresDatabase(HistoryDatabase):
     def __init__(self, database_url):
         self.database_url = database_url
         self._init_db()
@@ -771,8 +801,8 @@ class PostgresDatabase(SQLiteDatabase):
             SELECT 1
             FROM information_schema.columns
             WHERE table_schema = 'public'
-              AND table_name = ?
-              AND column_name = ?
+              AND table_name = %s
+              AND column_name = %s
             """,
             (table_name, column_name),
         )
@@ -791,20 +821,9 @@ class PostgresDatabase(SQLiteDatabase):
 
         conn = psycopg.connect(self.database_url)
         try:
-            yield PostgresConnection(conn)
+            yield conn
         finally:
             conn.close()
-
-
-class PostgresConnection:
-    def __init__(self, conn):
-        self.conn = conn
-
-    def cursor(self):
-        return PostgresCursor(self.conn.cursor())
-
-    def commit(self):
-        self.conn.commit()
 
 
 def init_db():
@@ -890,10 +909,30 @@ def get_scheduled_uploads(limit=20):
     return Database().get_scheduled_uploads(limit)
 
 
+def get_expired_scheduled_uploads(now_utc, limit=50):
+    return Database().get_expired_scheduled_uploads(now_utc, limit)
+
+
+def mark_expired_scheduled_uploads(now_utc):
+    return Database().mark_expired_scheduled_uploads(now_utc)
+
+
+def get_upload_detail(queue_id):
+    return Database().get_upload_detail(queue_id)
+
+
+def cancel_scheduled_upload(queue_id):
+    return Database().cancel_scheduled_upload(queue_id)
+
+
+def reschedule_scheduled_upload(queue_id, publish_at):
+    return Database().reschedule_scheduled_upload(queue_id, publish_at)
+
+
 def record_approved_state(state, niche="motivation"):
     Database().record_approved_state(state, niche)
 
 
 if __name__ == "__main__":
     init_db()
-    print("Veritabani hazir ve optimize edildi.")
+    print("PostgreSQL veritabani hazir.")
