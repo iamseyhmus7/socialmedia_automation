@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 
@@ -18,6 +19,8 @@ from moviepy import (
     concatenate_videoclips,
     vfx,
 )
+
+logger = logging.getLogger(__name__)
 
 
 FONT_PATH = os.getenv("SUBTITLE_FONT_PATH", "C:/Windows/Fonts/impact.ttf")
@@ -42,6 +45,7 @@ class RenderService:
         self.outputs_dir = outputs_dir
         self.fps = fps
         self.whisper_model = None
+        self.cleanup_stale_render_files()
 
     async def generate_voiceover(self, script_text: str, filename: str, highlighted_words: list[str] | None = None) -> str | None:
         highlighted_words = highlighted_words or []
@@ -60,7 +64,7 @@ class RenderService:
                 await communicate.save(segment_file)
                 segment_audio_files.append(segment_file)
             except Exception as exc:
-                print(f"  [RENDER] Voice segment {index} failed: {exc}")
+                logger.warning("Voice segment %s failed: %s", index, exc)
 
         if not segment_audio_files:
             return None
@@ -92,7 +96,7 @@ class RenderService:
         music_volume: float = 1.00,
     ) -> str | None:
         highlighted_words = highlighted_words or []
-        print(f"\n  [RENDER] Compositing video... (music volume: {music_volume})")
+        logger.info("Compositing video music_volume=%s", music_volume)
 
         voice = AudioFileClip(audio_path)
         total_duration = voice.duration + 1.5
@@ -104,7 +108,7 @@ class RenderService:
             try:
                 processed_clips.append(self._process_clip(video_path, clip_duration, is_opening=index == 0))
             except Exception as exc:
-                print(f"  [RENDER] Clip processing failed ({video_path}): {exc}")
+                logger.warning("Clip processing failed path=%s error=%s", video_path, exc)
 
         if not processed_clips:
             return None
@@ -123,15 +127,14 @@ class RenderService:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         temp_output_path = self._build_temp_output_path(output_path)
         try:
+            self._remove_file_if_exists(temp_output_path)
             final_video.write_videofile(temp_output_path, fps=self.fps, codec="libx264", audio_codec="aac", threads=4, logger="bar")
+            self._validate_render_output(temp_output_path, minimum_duration=max(total_duration - 1.0, 0.5))
             os.replace(temp_output_path, output_path)
+            self._validate_render_output(output_path, minimum_duration=max(total_duration - 1.0, 0.5))
             return output_path
         finally:
-            if os.path.exists(temp_output_path):
-                try:
-                    os.remove(temp_output_path)
-                except OSError:
-                    pass
+            self._remove_file_if_exists(temp_output_path)
             voice.close()
             final_video.close()
             final_audio.close()
@@ -142,6 +145,51 @@ class RenderService:
         directory = os.path.dirname(output_path)
         name, extension = os.path.splitext(os.path.basename(output_path))
         return os.path.join(directory, f"{name}.rendering{extension}")
+
+    def cleanup_stale_render_files(self) -> int:
+        if not os.path.isdir(self.outputs_dir):
+            return 0
+
+        removed = 0
+        for root, _dirs, files in os.walk(self.outputs_dir):
+            for file_name in files:
+                if ".rendering" not in file_name:
+                    continue
+                path = os.path.join(root, file_name)
+                if self._remove_file_if_exists(path):
+                    removed += 1
+        if removed:
+            logger.info("Removed %s stale render temp files", removed)
+        return removed
+
+    def _validate_render_output(self, output_path: str, minimum_duration: float = 0.5) -> None:
+        if not os.path.exists(output_path):
+            raise RuntimeError(f"Render output was not created: {output_path}")
+        if os.path.getsize(output_path) <= 0:
+            raise RuntimeError(f"Render output is empty: {output_path}")
+
+        clip = VideoFileClip(output_path)
+        try:
+            if clip.duration < minimum_duration:
+                raise RuntimeError(
+                    f"Render output is too short: {clip.duration:.2f}s < {minimum_duration:.2f}s"
+                )
+            if clip.w != 1080 or clip.h != 1920:
+                raise RuntimeError(f"Render output has invalid size: {clip.w}x{clip.h}")
+            if clip.audio is None:
+                raise RuntimeError("Render output has no audio track.")
+        finally:
+            clip.close()
+
+    def _remove_file_if_exists(self, path: str) -> bool:
+        if not os.path.exists(path):
+            return False
+        try:
+            os.remove(path)
+            return True
+        except OSError as exc:
+            logger.warning("Could not remove file path=%s error=%s", path, exc)
+            return False
 
     def _parse_sentences(self, script_text: str, highlighted_words: list[str]) -> list[tuple[str, str]]:
         sentences = []
@@ -185,7 +233,7 @@ class RenderService:
                     )
                     subtitle_clips.append(txt_clip)
                 except Exception as exc:
-                    print(f"  [RENDER] Subtitle word failed ({word_text}): {exc}")
+                    logger.warning("Subtitle word failed word=%s error=%s", word_text, exc)
         return subtitle_clips
 
     def _create_text_image(self, text: str, highlighted_words: list[str], is_hook_word: bool = False):
@@ -275,11 +323,11 @@ class RenderService:
     def _mix_audio(self, voice_clip, music_path: str | None, total_duration: float, music_volume: float = 1.00):
         layers = [voice_clip.with_start(0.5)]
         if not music_path:
-            print("  [RENDER] No background music path; audio will be voiceover only.", flush=True)
+            logger.info("No background music path; audio will be voiceover only")
             return CompositeAudioClip(layers)
 
         if not os.path.exists(music_path):
-            print(f"  [RENDER] Background music file not found: {music_path}", flush=True)
+            logger.warning("Background music file not found: %s", music_path)
             return CompositeAudioClip(layers)
 
         try:
@@ -287,7 +335,7 @@ class RenderService:
             if bg.duration < total_duration:
                 bg = concatenate_audioclips([bg] * (int(total_duration / bg.duration) + 1))
             layers.append(bg.subclipped(0, total_duration).with_volume_scaled(music_volume))
-            print(f"  [RENDER] Background music mixed: {music_path}", flush=True)
+            logger.info("Background music mixed: %s", music_path)
         except Exception as exc:
-            print(f"  [RENDER] Background music mix failed: {exc}", flush=True)
+            logger.warning("Background music mix failed: %s", exc)
         return CompositeAudioClip(layers)
