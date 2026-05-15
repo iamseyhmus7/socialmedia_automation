@@ -24,6 +24,8 @@ class ScriptQualityServiceTests(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertTrue(any("cliche" in reason.lower() for reason in reasons))
+        self.assertEqual(script["quality_report"]["grade"], "F")
+        self.assertFalse(script["quality_report"]["valid"])
 
     def test_best_candidate_prefers_strong_hook_and_loop(self):
         weak = {
@@ -47,6 +49,9 @@ class ScriptQualityServiceTests(unittest.TestCase):
         self.assertEqual(result.script["hook"], "Your excuses are costing you.")
         self.assertTrue(result.valid)
         self.assertGreater(result.script["quality_score"], 0.62)
+        self.assertEqual(result.score, result.script["quality_score"])
+        self.assertEqual(result.report["grade"], result.script["quality_report"]["grade"])
+        self.assertIn("components", result.report)
 
     def test_content_agent_uses_best_quality_candidate(self):
         class FakeContentService:
@@ -69,6 +74,29 @@ class ScriptQualityServiceTests(unittest.TestCase):
 
         self.assertEqual(script["hook"], "You are wasting pressure.")
         self.assertEqual(script["style"], "aggressive_viral_motivation")
+        self.assertIn("quality_report", script)
+        self.assertTrue(script["quality_report"]["valid"])
+
+    def test_quality_report_exposes_counts_components_and_risks(self):
+        script = self.quality.normalize_script(
+            {
+                "hook": "You are wasting pressure.",
+                "body": "You avoid the uncomfortable hour, but that hour is where discipline starts replacing the story you keep repeating when nobody is watching.",
+                "outro": "Use the pressure today, before comfort teaches you to waste it again.",
+                "loop_ending": "That is how you stop wasting pressure.",
+                "vurgulanacak_kelimeler": ["pressure", "discipline", "comfort"],
+            }
+        )
+        valid, reasons = self.quality.validate(script)
+        report = self.quality.quality_report(script, valid, reasons)
+
+        self.assertIn(report["grade"], {"A", "B", "C"})
+        self.assertEqual(report["word_count"], 38)
+        self.assertEqual(report["hook_word_count"], 4)
+        self.assertEqual(report["scene_count"], 6)
+        self.assertIn("hook", report["components"])
+        self.assertIsInstance(report["strengths"], list)
+        self.assertIsInstance(report["risks"], list)
 
 
 if __name__ == "__main__":
