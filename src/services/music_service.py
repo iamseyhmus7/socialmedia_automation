@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 
 import requests
 
 from database import is_music_used
+
+logger = logging.getLogger(__name__)
 
 
 FALLBACK_MUSIC_QUERIES = [
@@ -33,7 +36,7 @@ class FreesoundMusicService:
     ) -> tuple[str | None, str | None]:
         exclude_ids = exclude_ids or []
         if not self.api_key:
-            print("  [MUSIC SERVICE] FREESOUND_API_KEY is missing; skipping background music.", flush=True)
+            logger.warning("FREESOUND_API_KEY is missing; skipping background music")
             return None, None
 
         for search_query in self._search_queries(query, is_fallback):
@@ -41,7 +44,7 @@ class FreesoundMusicService:
             if result != (None, None):
                 return result
 
-        print("  [MUSIC SERVICE] No usable background music found after all fallback queries.", flush=True)
+        logger.warning("No usable background music found after all fallback queries")
         return None, None
 
     def _search_queries(self, query: str, is_fallback: bool) -> list[str]:
@@ -56,7 +59,7 @@ class FreesoundMusicService:
         return queries
 
     def _search_single_query(self, query: str, exclude_ids: list[str]) -> tuple[str | None, str | None]:
-        print(f"  [MUSIC SERVICE] Searching Freesound: {query}", flush=True)
+        logger.info("Searching Freesound: %s", query)
         params = {
             "query": query,
             "token": self.api_key,
@@ -69,14 +72,11 @@ class FreesoundMusicService:
             response = requests.get(self.search_url, params=params, timeout=45)
             if response.status_code != 200:
                 response_text = getattr(response, "text", "")
-                print(
-                    f"  [MUSIC SERVICE] Search failed with HTTP {response.status_code}: {response_text[:180]}",
-                    flush=True,
-                )
+                logger.warning("Freesound search failed with HTTP %s: %s", response.status_code, response_text[:180])
                 return None, None
             results = response.json().get("results", [])
             if not results:
-                print("  [MUSIC SERVICE] No results for query.", flush=True)
+                logger.info("Freesound returned no results")
                 return None, None
 
             filtered = [
@@ -87,27 +87,27 @@ class FreesoundMusicService:
                 and item.get("previews", {}).get("preview-hq-mp3")
             ]
             if not filtered:
-                print("  [MUSIC SERVICE] Results were already used, excluded, or missing MP3 previews.", flush=True)
+                logger.info("Freesound results were already used, excluded, or missing MP3 previews")
                 return None, None
 
             sound = random.choice(filtered[: min(5, len(filtered))])
             preview_url = sound.get("previews", {}).get("preview-hq-mp3")
-            print(f"  [MUSIC SERVICE] Found: {sound.get('name')}", flush=True)
+            logger.info("Freesound found: %s", sound.get("name"))
             return str(sound.get("id")), preview_url
         except Exception as exc:
-            print(f"  [MUSIC SERVICE] Search failed: {exc}", flush=True)
+            logger.warning("Freesound search failed: %s", exc)
             return None, None
 
     def download_music(self, url: str, filename: str) -> str:
         path = os.path.join(self.assets_dir, filename)
         if os.path.exists(path):
-            print(f"  [MUSIC SERVICE] Using cached music: {path}", flush=True)
+            logger.info("Using cached music: %s", path)
             return path
         os.makedirs(self.assets_dir, exist_ok=True)
-        print(f"  [MUSIC SERVICE] Downloading music preview: {filename}", flush=True)
+        logger.info("Downloading music preview: %s", filename)
         response = requests.get(url, timeout=120)
         response.raise_for_status()
         with open(path, "wb") as file:
             file.write(response.content)
-        print(f"  [MUSIC SERVICE] Saved music: {path} ({len(response.content)} bytes)", flush=True)
+        logger.info("Saved music: %s (%s bytes)", path, len(response.content))
         return path
