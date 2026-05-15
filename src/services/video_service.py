@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
 import requests
 
 from database import is_video_used
+
+logger = logging.getLogger(__name__)
 
 
 MIN_SHORT_HEIGHT = 1280
@@ -19,6 +22,47 @@ class VideoCandidate:
     url: str
     score: float
     source: str
+
+
+@dataclass(frozen=True)
+class VideoValidationResult:
+    valid: bool
+    reason: str = ""
+    width: int = 0
+    height: int = 0
+    duration: float = 0.0
+
+
+class VideoAssetValidator:
+    def __init__(self, min_duration: float = 2.0):
+        self.min_duration = min_duration
+
+    def validate(self, path: str) -> VideoValidationResult:
+        if not os.path.exists(path):
+            return VideoValidationResult(False, f"file not found: {path}")
+        if os.path.getsize(path) <= 0:
+            return VideoValidationResult(False, f"empty file: {path}")
+
+        try:
+            from moviepy import VideoFileClip
+        except ImportError as exc:
+            return VideoValidationResult(False, f"moviepy is not installed: {exc}")
+
+        try:
+            clip = VideoFileClip(path)
+        except Exception as exc:
+            return VideoValidationResult(False, f"video cannot be opened: {exc}")
+
+        try:
+            width, height = int(clip.w or 0), int(clip.h or 0)
+            duration = float(clip.duration or 0.0)
+            if not _is_short_format(width, height):
+                return VideoValidationResult(False, f"not vertical short format: {width}x{height}", width, height, duration)
+            if duration < self.min_duration:
+                return VideoValidationResult(False, f"video too short: {duration:.2f}s", width, height, duration)
+            return VideoValidationResult(True, "", width, height, duration)
+        finally:
+            clip.close()
 
 
 def _is_short_format(width: int | float, height: int | float) -> bool:
@@ -162,14 +206,11 @@ class PexelsVideoService:
 
             params = {"query": search_term, "per_page": 15, "orientation": "portrait"}
             try:
-                print(f"  [VIDEO SERVICE] Searching Pexels: {search_term}", flush=True)
+                logger.info("Searching Pexels: %s", search_term)
                 response = requests.get(self.search_url, headers=headers, params=params, timeout=45)
                 if response.status_code != 200:
                     response_text = getattr(response, "text", "")
-                    print(
-                        f"  [VIDEO SERVICE] Pexels failed with HTTP {response.status_code}: {response_text[:180]}",
-                        flush=True,
-                    )
+                    logger.warning("Pexels failed with HTTP %s: %s", response.status_code, response_text[:180])
                     continue
                 selected_for_query = False
                 for result_index, video in enumerate(response.json().get("videos", [])):
@@ -184,9 +225,9 @@ class PexelsVideoService:
                         selected_for_query = True
                         break
                 if not selected_for_query:
-                    print("  [VIDEO SERVICE] Pexels returned no usable 9:16 short-format videos.", flush=True)
+                    logger.info("Pexels returned no usable 9:16 short-format videos")
             except Exception as exc:
-                print(f"  [VIDEO SERVICE] Search failed ({search_term}): {exc}", flush=True)
+                logger.warning("Pexels search failed query=%s error=%s", search_term, exc)
 
         return candidates
 
@@ -243,7 +284,7 @@ class PixabayVideoService:
 
     def search_candidates(self, queries: list[str], count: int = 6) -> list[VideoCandidate]:
         if not self.api_key:
-            print("  [VIDEO SERVICE] PIXABAY_API_KEY is missing; skipping Pixabay videos.", flush=True)
+            logger.warning("PIXABAY_API_KEY is missing; skipping Pixabay videos")
             return []
 
         candidates = []
@@ -268,21 +309,18 @@ class PixabayVideoService:
                 "min_height": 720,
             }
             try:
-                print(f"  [VIDEO SERVICE] Searching Pixabay: {api_query} (from: {search_term})", flush=True)
+                logger.info("Searching Pixabay: %s from=%s", api_query, search_term)
                 response = requests.get(self.search_url, params=params, timeout=45)
                 if response.status_code != 200:
                     response_text = getattr(response, "text", "")
-                    print(
-                        f"  [VIDEO SERVICE] Pixabay failed with HTTP {response.status_code}: {response_text[:180]}",
-                        flush=True,
-                    )
+                    logger.warning("Pixabay failed with HTTP %s: %s", response.status_code, response_text[:180])
                     continue
                 choice = self._choose_best_video(response.json().get("hits", []), search_term, selected_ids, query_index)
                 if choice:
                     candidates.append(choice)
                     selected_ids.add(choice.id)
             except Exception as exc:
-                print(f"  [VIDEO SERVICE] Pixabay search failed ({search_term}): {exc}", flush=True)
+                logger.warning("Pixabay search failed query=%s error=%s", search_term, exc)
 
         return candidates
 
@@ -328,7 +366,7 @@ class PixabayVideoService:
             candidates.append(VideoCandidate(video_id, best_file.get("url"), score, "pixabay"))
 
         if not candidates:
-            print("  [VIDEO SERVICE] Pixabay returned no usable 9:16 short-format videos.", flush=True)
+            logger.info("Pixabay returned no usable 9:16 short-format videos")
             return None
 
         return max(candidates, key=lambda candidate: candidate.score)
@@ -366,11 +404,34 @@ class MultiSourceVideoService:
                 selected_ids.add(candidate.id)
 
         ranked = sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
-        selected = ranked[:count]
+        selected = self._select_diverse_candidates(ranked, count)
         if selected:
             summary = ", ".join(f"{candidate.source}:{candidate.id}={candidate.score:.2f}" for candidate in selected)
-            print(f"  [VIDEO SERVICE] Selected ranked videos: {summary}", flush=True)
+            logger.info("Selected ranked videos: %s", summary)
         return [(candidate.id, candidate.url) for candidate in selected]
+
+    def _select_diverse_candidates(self, ranked: list[VideoCandidate], count: int) -> list[VideoCandidate]:
+        selected = []
+        source_counts = {}
+        for candidate in ranked:
+            if len(selected) >= count:
+                break
+            source_count = source_counts.get(candidate.source, 0)
+            if source_count >= max(2, count // 2) and len({item.source for item in selected}) < 2:
+                continue
+            selected.append(candidate)
+            source_counts[candidate.source] = source_count + 1
+
+        if len(selected) < count:
+            selected_ids = {candidate.id for candidate in selected}
+            for candidate in ranked:
+                if len(selected) >= count:
+                    break
+                if candidate.id in selected_ids:
+                    continue
+                selected.append(candidate)
+                selected_ids.add(candidate.id)
+        return selected
 
     def _provider_candidates(self, provider: object, queries: list[str], count: int) -> list[VideoCandidate]:
         if hasattr(provider, "search_candidates"):
@@ -403,7 +464,7 @@ class CoverrVideoService:
 
     def search_candidates(self, queries: list[str], count: int = 6) -> list[VideoCandidate]:
         if not self.api_key:
-            print("  [VIDEO SERVICE] COVERR_API_KEY is missing; skipping Coverr videos.", flush=True)
+            logger.warning("COVERR_API_KEY is missing; skipping Coverr videos")
             return []
 
         candidates = []
@@ -423,14 +484,11 @@ class CoverrVideoService:
                 "urls": "true",
             }
             try:
-                print(f"  [VIDEO SERVICE] Searching Coverr: {api_query} (from: {search_term})", flush=True)
+                logger.info("Searching Coverr: %s from=%s", api_query, search_term)
                 response = requests.get(self.search_url, headers=headers, params=params, timeout=45)
                 if response.status_code != 200:
                     response_text = getattr(response, "text", "")
-                    print(
-                        f"  [VIDEO SERVICE] Coverr failed with HTTP {response.status_code}: {response_text[:180]}",
-                        flush=True,
-                    )
+                    logger.warning("Coverr failed with HTTP %s: %s", response.status_code, response_text[:180])
                     continue
                 for result_index, video in enumerate(response.json().get("hits", [])):
                     video_id = f"coverr_{video.get('id')}"
@@ -445,9 +503,9 @@ class CoverrVideoService:
                         selected_ids.add(video_id)
                         break
                 else:
-                    print("  [VIDEO SERVICE] Coverr returned no usable vertical short-format videos.", flush=True)
+                    logger.info("Coverr returned no usable vertical short-format videos")
             except Exception as exc:
-                print(f"  [VIDEO SERVICE] Coverr search failed ({search_term}): {exc}", flush=True)
+                logger.warning("Coverr search failed query=%s error=%s", search_term, exc)
 
         return candidates
 
