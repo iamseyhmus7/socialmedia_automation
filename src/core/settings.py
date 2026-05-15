@@ -27,7 +27,6 @@ class Settings:
     base_dir: str
     assets_dir: str
     outputs_dir: str
-    db_path: str
     database_url: str | None
     pexels_api_key: str | None
     pixabay_api_key: str | None
@@ -82,7 +81,6 @@ def get_settings() -> Settings:
         base_dir=base_dir,
         assets_dir=os.path.join(base_dir, "assets"),
         outputs_dir=os.path.join(base_dir, "outputs"),
-        db_path=os.path.join(base_dir, "video_history.db"),
         database_url=os.getenv("DATABASE_URL"),
         pexels_api_key=os.getenv("PEXELS_API_KEY"),
         pixabay_api_key=os.getenv("PIXABAY_API_KEY"),
