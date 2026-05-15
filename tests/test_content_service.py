@@ -123,6 +123,8 @@ class ScriptQualityVisualNormalizationTests(unittest.TestCase):
         self.assertEqual(script["media_plan"]["video_scenes"][0]["beat"], "hook")
         self.assertEqual(script["freesound_arama_terimi"], "dark cinematic motivational emotional build intense no vocals")
         self.assertEqual(script["publishing"]["youtube_title"], "You Are Wasting Pressure")
+        self.assertIn("quality_report", script)
+        self.assertIn("components", script["quality_report"])
 
 
 if __name__ == "__main__":
