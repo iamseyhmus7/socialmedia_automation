@@ -70,30 +70,6 @@ docker compose down
 
 `tiktok-due` kontrol araligi `docker-compose.yml` icindeki `TIKTOK_DUE_CHECK_INTERVAL_SECONDS` ile ayarlanir. Basarili veya basarisiz TikTok denemeleri Telegram'a bildirilir; zamani gelen kayit yoksa sadece log'a yazilir.
 
-## SQLite verisini PostgreSQL'e tasima
-
-Eski `video_history.db` dosyasi silinmez; migration sadece okur ve Postgres'e kopyalar. Docker servislerini ilk kez Postgres ile baslattiktan sonra tek sefer calistirin:
-
-```powershell
-docker compose up -d postgres
-docker compose run --rm bot python tools/migrate_sqlite_to_postgres.py
-docker compose up -d --build
-```
-
-Migration sirasinda `outputs`, `assets` ve `user_data` altindaki eski Windows yollari Docker runtime yolu olan `/app/...` formatina cevrilir.
-
-Postgres sifre hatasi alirsaniz ve henuz migration basarili olmadiysa Postgres volume'u sifirlayip tekrar deneyin:
-
-```powershell
-docker compose down -v
-docker compose up -d postgres
-docker compose build bot tiktok-due
-docker compose run --rm bot python tools/migrate_sqlite_to_postgres.py
-docker compose up -d
-```
-
-Bu komut proje klasorundeki `video_history.db`, `outputs/` veya `user_data/` dosyalarini silmez; sadece Docker'in `postgres_data` volume'unu sifirlar.
-
 ## Telegram komutlari
 
 - `/start` sistemi baslatir.
@@ -101,13 +77,18 @@ Bu komut proje klasorundeki `video_history.db`, `outputs/` veya `user_data/` dos
 - `/stop` mevcut kritik isi guvenli bitirir, yeni video uretmez.
 - `/pause` mevcut isi bitirip bekler.
 - `/resume` duraklatilan sistemi devam ettirir.
-- `/status` mevcut durumu gosterir.
+- `/status` mevcut durumu ve sistem sagligini gosterir: PostgreSQL, klasorler, disk alani, API ayarlari ve yayin kuyrugu kontrol edilir.
 - `/queue` planlanan YouTube ve lokal TikTok yayinlarini gosterir.
+- `/queue_detail` planlanan yayinlari `youtube:ID` / `tiktok:ID` queue id'leri ve ayrintilariyla gosterir.
+- `/queue_expired` gecmiste kalmis ama hala `scheduled` gorunen yayinlari listeler.
+- `/queue_cleanup` gecmiste kalmis `scheduled` yayinlari silmeden `expired` yapar.
+- `/cancel youtube:12` planlanan bir yayin kaydini iptal eder.
+- `/reschedule youtube:12 2026-05-16 17:30` planlanan bir yayin kaydinin saatini degistirir.
 - `/publish_due` zamani gelen lokal TikTok yayinlarini yukler.
 
 ## TikTok yayin modeli
 
-TikTok zamanlama v1'de lokal veritabani kuyrugu ile calisir. Uretim sonunda TikTok kaydi `video_history.db` icindeki lokal queue'ya yazilir. Gercek upload, `/publish_due` komutu veya `tools\publish_due_tiktok.py` ile zamani gelen kayitlar icin tetiklenir.
+TikTok zamanlama v1'de PostgreSQL kuyrugu ile calisir. Uretim sonunda TikTok kaydi `tiktok_uploads` tablosuna yazilir. Gercek upload, `/publish_due` komutu veya `tools\publish_due_tiktok.py` ile zamani gelen kayitlar icin tetiklenir.
 
 Scheduler kurulumunu testler ve manuel smoke test basarili olmadan acmayin.
 
