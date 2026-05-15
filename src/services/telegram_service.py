@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class TelegramService:
@@ -14,7 +17,7 @@ class TelegramService:
 
     def send_message(self, text: str) -> bool:
         if not self.token or not self.chat_id:
-            print("  [TELEGRAM] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing.")
+            logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
             return False
         response = self._requests().post(
             f"{self.api_url}/sendMessage",
@@ -22,17 +25,17 @@ class TelegramService:
             timeout=30,
         )
         if response.status_code == 200:
-            print(f"  [TELEGRAM] Sent message: {text[:120]}")
+            logger.info("Sent Telegram message: %s", text[:120])
         else:
-            print(f"  [TELEGRAM] Message send failed: {response.status_code} {response.text[:200]}")
+            logger.warning("Telegram message send failed: %s %s", response.status_code, response.text[:200])
         return response.status_code == 200
 
     def send_video(self, video_path: str, caption: str | None = None) -> bool:
         if not self.token or not self.chat_id:
-            print("  [TELEGRAM] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing.")
+            logger.warning("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
             return False
 
-        print(f"  [TELEGRAM] Sending video: {os.path.basename(video_path)}")
+        logger.info("Sending Telegram video: %s", os.path.basename(video_path))
         with open(video_path, "rb") as video:
             response = self._requests().post(
                 f"{self.api_url}/sendVideo",
@@ -43,13 +46,13 @@ class TelegramService:
                 },
                 files={"video": video},
                 timeout=120,
-            )
+        )
         if response.status_code != 200:
-            print(f"  [TELEGRAM] Video send failed: {response.status_code} {response.text[:200]}")
+            logger.warning("Telegram video send failed: %s %s", response.status_code, response.text[:200])
         return response.status_code == 200
 
     def wait_for_message(self, timeout_minutes: int = 15, skip_existing: bool = True) -> str | None:
-        print(f"  [TELEGRAM] Waiting for message for up to {timeout_minutes} minutes...")
+        logger.info("Waiting for Telegram message for up to %s minutes", timeout_minutes)
         if skip_existing or self.last_update_id is None:
             self.last_update_id = self._get_latest_update_id()
         start_time = time.time()
@@ -70,10 +73,10 @@ class TelegramService:
                     if str(message.get("chat", {}).get("id")) == str(self.chat_id):
                         text = message.get("text", "")
                         if text:
-                            print(f"  [TELEGRAM] Received user message: {text}")
+                            logger.info("Received Telegram user message: %s", text)
                             return text
             except Exception as exc:
-                print(f"  [TELEGRAM] Polling error: {exc}")
+                logger.warning("Telegram polling error: %s", exc)
                 time.sleep(5)
         return None
 
