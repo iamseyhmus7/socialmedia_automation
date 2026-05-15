@@ -12,12 +12,50 @@ from src.services.video_service import (
     MultiSourceVideoService,
     PexelsVideoService,
     PixabayVideoService,
+    VideoAssetValidator,
     VideoCandidate,
+    VideoValidationResult,
     _vertical_provider_query,
 )
 
 
 class MediaAgentQueryTests(unittest.TestCase):
+    def test_download_initial_videos_skips_invalid_downloaded_assets(self):
+        class FakeVideoService:
+            def search_videos(self, queries, count=1):
+                return [("bad", "bad-url"), ("good", "good-url")]
+
+            def download_video(self, url, filename):
+                return f"assets/{filename}"
+
+        class FakeValidator:
+            def validate(self, path):
+                if "bad" in path:
+                    return VideoValidationResult(False, "broken file")
+                return VideoValidationResult(True, width=1080, height=1920, duration=5.0)
+
+        agent = MediaAgent(FakeVideoService(), types.SimpleNamespace(), video_validator=FakeValidator())
+
+        paths = agent.download_initial_videos({"video_sahneleri": ["stressed person close up"]})
+
+        self.assertEqual(paths, ["assets/raw_good.mp4"])
+
+    def test_download_by_queries_returns_only_valid_assets(self):
+        class FakeVideoService:
+            def search_videos(self, queries, count=1):
+                return [("bad", "bad-url"), ("good", "good-url")]
+
+            def download_video(self, url, filename):
+                return f"assets/{filename}"
+
+        class FakeValidator:
+            def validate(self, path):
+                return VideoValidationResult("good" in path, "invalid" if "bad" in path else "", 1080, 1920, 4.0)
+
+        agent = MediaAgent(FakeVideoService(), types.SimpleNamespace(), video_validator=FakeValidator())
+
+        self.assertEqual(agent._download_by_queries(["discipline"], count=2), ["assets/raw_good.mp4"])
+
     def test_opening_query_is_tied_to_script_hook_and_theme(self):
         agent = MediaAgent.__new__(MediaAgent)
         query = agent._build_opening_query(
@@ -221,6 +259,71 @@ class MediaAgentQueryTests(unittest.TestCase):
             service.search_videos(["discipline"], count=2),
             [("pixabay_2", "pixabay-url"), ("coverr_3", "coverr-url")],
         )
+
+    def test_multi_source_video_search_avoids_single_source_monopoly_when_possible(self):
+        primary = types.SimpleNamespace(
+            search_candidates=lambda queries, count=6: [
+                VideoCandidate("pexels_1", "pexels-1-url", 10.0, "pexels"),
+                VideoCandidate("pexels_2", "pexels-2-url", 9.0, "pexels"),
+                VideoCandidate("pexels_3", "pexels-3-url", 8.0, "pexels"),
+            ],
+            download_video=lambda url, filename: "pexels-path",
+        )
+        pixabay = types.SimpleNamespace(
+            search_candidates=lambda queries, count=6: [VideoCandidate("pixabay_1", "pixabay-url", 7.0, "pixabay")],
+            download_video=lambda url, filename: "pixabay-path",
+        )
+        service = MultiSourceVideoService(primary, [pixabay])
+
+        self.assertEqual(
+            service.search_videos(["discipline"], count=3),
+            [("pexels_1", "pexels-1-url"), ("pexels_2", "pexels-2-url"), ("pixabay_1", "pixabay-url")],
+        )
+
+    def test_video_asset_validator_rejects_missing_file(self):
+        result = VideoAssetValidator().validate("missing-file.mp4")
+
+        self.assertFalse(result.valid)
+        self.assertIn("file not found", result.reason)
+
+    def test_video_asset_validator_accepts_vertical_video(self):
+        class FakeClip:
+            w = 1080
+            h = 1920
+            duration = 4.0
+
+            def close(self):
+                pass
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=1024),
+            patch.dict("sys.modules", {"moviepy": types.SimpleNamespace(VideoFileClip=lambda path: FakeClip())}),
+        ):
+            result = VideoAssetValidator().validate("video.mp4")
+
+        self.assertTrue(result.valid)
+        self.assertEqual(result.width, 1080)
+        self.assertEqual(result.height, 1920)
+
+    def test_video_asset_validator_rejects_landscape_video(self):
+        class FakeClip:
+            w = 1920
+            h = 1080
+            duration = 4.0
+
+            def close(self):
+                pass
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.getsize", return_value=1024),
+            patch.dict("sys.modules", {"moviepy": types.SimpleNamespace(VideoFileClip=lambda path: FakeClip())}),
+        ):
+            result = VideoAssetValidator().validate("video.mp4")
+
+        self.assertFalse(result.valid)
+        self.assertIn("not vertical", result.reason)
 
     def test_coverr_video_search_uses_bearer_auth_and_download_url(self):
         service = CoverrVideoService("key", "assets")
