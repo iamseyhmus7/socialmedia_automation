@@ -10,8 +10,11 @@ from src.services.publish_schedule_service import PublishScheduleService
 
 WorkflowRunner = Callable[[], Awaitable[dict]]
 TextProvider = Callable[[], str]
+QueueMutationProvider = Callable[[str], str]
+QueueRescheduleProvider = Callable[[str, str], str]
 MessageSender = Callable[[str], bool]
 CleanupCallback = Callable[[], None]
+StatusProvider = Callable[[], str]
 
 
 @dataclass
@@ -32,17 +35,31 @@ class BotController:
         self,
         workflow_runner: WorkflowRunner,
         queue_provider: TextProvider | None = None,
+        queue_detail_provider: TextProvider | None = None,
+        queue_expired_provider: TextProvider | None = None,
+        queue_cleanup_provider: TextProvider | None = None,
+        queue_cancel_provider: QueueMutationProvider | None = None,
+        queue_reschedule_provider: QueueRescheduleProvider | None = None,
         due_publisher: TextProvider | None = None,
         message_sender: MessageSender | None = None,
         schedule_service: PublishScheduleService | None = None,
         cleanup_callback: CleanupCallback | None = None,
+        status_provider: StatusProvider | None = None,
     ):
         self.workflow_runner = workflow_runner
         self.queue_provider = queue_provider or (lambda: "Planlanan yayin yok.")
+        self.queue_detail_provider = queue_detail_provider or self.queue_provider
+        self.queue_expired_provider = queue_expired_provider or (lambda: "Queue expired servisi hazir degil.")
+        self.queue_cleanup_provider = queue_cleanup_provider or (lambda: "Queue cleanup servisi hazir degil.")
+        self.queue_cancel_provider = queue_cancel_provider or (lambda queue_id: f"Queue iptal servisi hazir degil: {queue_id}")
+        self.queue_reschedule_provider = queue_reschedule_provider or (
+            lambda queue_id, publish_at: f"Queue zamanlama servisi hazir degil: {queue_id} {publish_at}"
+        )
         self.due_publisher = due_publisher or (lambda: "Zamani gelen yayin yok.")
         self.message_sender = message_sender or (lambda _text: True)
         self.schedule_service = schedule_service or PublishScheduleService()
         self.cleanup_callback = cleanup_callback or (lambda: None)
+        self.status_provider = status_provider
         self.state = BotControllerState()
         self._generation_task: asyncio.Task | None = None
 
@@ -89,6 +106,21 @@ class BotController:
         if command.type == BotCommandType.QUEUE:
             return self.queue_provider()
 
+        if command.type == BotCommandType.QUEUE_DETAIL:
+            return self.queue_detail_provider()
+
+        if command.type == BotCommandType.QUEUE_EXPIRED:
+            return self.queue_expired_provider()
+
+        if command.type == BotCommandType.QUEUE_CLEANUP:
+            return self.queue_cleanup_provider()
+
+        if command.type == BotCommandType.CANCEL:
+            return self.queue_cancel_provider(command.queue_id or "")
+
+        if command.type == BotCommandType.RESCHEDULE:
+            return self.queue_reschedule_provider(command.queue_id or "", command.publish_at or "")
+
         if command.type == BotCommandType.PUBLISH_DUE:
             return self.due_publisher()
 
@@ -109,6 +141,13 @@ class BotController:
             lines.append("Siradaki: beklemede")
         if self.state.last_error:
             lines.append(f"Son hata: {self.state.last_error}")
+        if self.status_provider:
+            try:
+                lines.append("")
+                lines.append(self.status_provider())
+            except Exception as exc:
+                lines.append("")
+                lines.append(f"Sistem sagligi: UYARI - durum raporu alinamadi: {exc}")
         return "\n".join(lines)
 
     def _start_generation(self, count: int) -> str:
