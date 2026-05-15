@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import inspect
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from src.domain.state import WorkflowState
 from src.services.publish_schedule_service import PublishScheduleService
 from src.services.render_brief_service import build_render_brief
 from src.services.video_metadata_service import build_upload_metadata
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.agents.content_agent import ContentAgent
@@ -55,12 +58,12 @@ class VideoWorkflowNodes:
         self.publish_schedule_service = publish_schedule_service or PublishScheduleService()
 
     async def generate_initial_script(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Generating script...", flush=True)
+        logger.info("Generating script")
         script_data = await asyncio.to_thread(self.content_agent.generate_script)
         return self._script_update(state, script_data)
 
     async def download_initial_videos(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Downloading initial videos...", flush=True)
+        logger.info("Downloading initial videos")
         script_data = state["script_data"]
         video_paths = await asyncio.to_thread(self.media_agent.download_initial_videos, script_data)
         return {
@@ -69,7 +72,7 @@ class VideoWorkflowNodes:
         }
 
     async def download_initial_music(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Downloading initial music...", flush=True)
+        logger.info("Downloading initial music")
         music_path, tried_ids = await asyncio.to_thread(
             self.media_agent.download_music,
             state["script_data"],
@@ -78,7 +81,7 @@ class VideoWorkflowNodes:
         return {"music_path": music_path, "tried_music_ids": tried_ids}
 
     async def apply_feedback_actions(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Applying feedback actions...", flush=True)
+        logger.info("Applying feedback actions")
         actions = state.get("pending_actions", [])
         updates = {}
 
@@ -114,7 +117,7 @@ class VideoWorkflowNodes:
         return updates
 
     async def render_video(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Rendering video...", flush=True)
+        logger.info("Rendering video")
         revision = int(state.get("revision", 0)) + 1
         date_folder = state.get("date_folder") or datetime.datetime.now().strftime("%Y-%m-%d")
         timestamp = state.get("timestamp") or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -149,7 +152,7 @@ class VideoWorkflowNodes:
         }
 
     async def ask_for_approval(self, state: WorkflowState) -> dict:
-        print("\n[NODE] Waiting for Telegram feedback...", flush=True)
+        logger.info("Waiting for Telegram feedback")
         video_path = state["final_video_path"]
         file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
         caption = f"Video hazir ({file_size_mb:.1f} MB). Komutunuz?"
@@ -275,7 +278,7 @@ class VideoWorkflowNodes:
         if not video_path:
             return {"upload_status": "failed", "upload_error": "No final video path is available for upload."}
 
-        print("\n[NODE] Uploading approved video to YouTube...", flush=True)
+        logger.info("Uploading approved video to YouTube")
         try:
             result = await asyncio.to_thread(
                 self.youtube_upload_service.upload_video,
@@ -284,7 +287,7 @@ class VideoWorkflowNodes:
                 publish_at=publish_at,
             )
         except Exception as exc:
-            print(f"  [YOUTUBE] Upload failed: {exc}", flush=True)
+            logger.info("YouTube upload failed: %s", exc)
             return {
                 "upload_status": "failed",
                 "upload_error": str(exc),
@@ -295,9 +298,9 @@ class VideoWorkflowNodes:
 
         if result.publish_at:
             local_publish_at = self.publish_schedule_service.format_local_datetime(result.publish_at)
-            print(f"  [YOUTUBE] Scheduled: {result.youtube_url} (public at {local_publish_at})", flush=True)
+            logger.info("YouTube scheduled: %s public_at=%s", result.youtube_url, local_publish_at)
         else:
-            print(f"  [YOUTUBE] Uploaded: {result.youtube_url}", flush=True)
+            logger.info("YouTube uploaded: %s", result.youtube_url)
         record_youtube_upload(
             video_path,
             result.video_id,
@@ -335,7 +338,7 @@ class VideoWorkflowNodes:
                 "instagram_url": None,
             }
 
-        print("\n[NODE] Uploading approved video to Instagram Reels...", flush=True)
+        logger.info("Uploading approved video to Instagram Reels")
         try:
             caption = self._instagram_caption_for_video(video_path, state)
             result = await asyncio.to_thread(
@@ -345,7 +348,7 @@ class VideoWorkflowNodes:
                 caption=caption,
             )
         except Exception as exc:
-            print(f"  [INSTAGRAM] Upload failed: {exc}", flush=True)
+            logger.info("Instagram upload failed: %s", exc)
             return {
                 "instagram_upload_status": "failed",
                 "instagram_upload_error": str(exc),
@@ -354,9 +357,9 @@ class VideoWorkflowNodes:
             }
 
         if result.instagram_url:
-            print(f"  [INSTAGRAM] Published: {result.instagram_url}", flush=True)
+            logger.info("Instagram published: %s", result.instagram_url)
         else:
-            print(f"  [INSTAGRAM] Published media id: {result.media_id}", flush=True)
+            logger.info("Instagram published media_id=%s", result.media_id)
         return {
             "instagram_upload_status": "uploaded",
             "instagram_upload_error": None,
@@ -398,10 +401,9 @@ class VideoWorkflowNodes:
 
         record_tiktok_upload(video_path, publish_at=publish_at, status="scheduled")
         local_publish_at = self.publish_schedule_service.format_local_datetime(publish_at) if publish_at else "now"
-        print(
-            f"  [TIKTOK] Queued locally for Direct Post at {local_publish_at}. "
-            "It will not appear in TikTok Studio until the due publisher uploads it.",
-            flush=True,
+        logger.info(
+            "TikTok queued locally for Direct Post at %s. It will not appear in TikTok Studio until the due publisher uploads it.",
+            local_publish_at,
         )
         return {
             "tiktok_upload_status": "scheduled",
