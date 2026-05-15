@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from src.core.settings import get_settings
 from src.services.youtube_upload_service import YouTubeUploadService
+
+logger = logging.getLogger(__name__)
 
 
 class UploaderService:
@@ -18,15 +21,15 @@ class UploaderService:
         )
 
     async def login_manually(self, platform_url: str = "https://studio.youtube.com/") -> None:
-        print("\n[LOGIN] Starting YouTube OAuth flow...")
-        print("A Google OAuth browser window will open if a fresh token is needed.")
+        logger.info("Starting YouTube OAuth flow")
+        logger.info("A Google OAuth browser window will open if a fresh token is needed")
         await asyncio.to_thread(self.youtube_service.ensure_authenticated)
-        print("[LOGIN] YouTube OAuth token is ready.")
+        logger.info("YouTube OAuth token is ready")
 
     async def upload_to_all(self, video_path: str) -> None:
-        print("\n[UPLOADER] Starting social upload flow...")
+        logger.info("Starting social upload flow")
         await self.upload_to_youtube(video_path)
-        print("[UPLOADER] Upload flow completed.")
+        logger.info("Upload flow completed")
 
     async def upload_to_youtube(
         self,
@@ -35,7 +38,7 @@ class UploaderService:
         description: str = "#motivation #shorts #stoicism",
         script_data: dict[str, Any] | None = None,
     ) -> None:
-        print(f"  -> Uploading to YouTube via Data API: {video_path}")
+        logger.info("Uploading to YouTube via Data API: %s", video_path)
         result = await asyncio.to_thread(
             self.youtube_service.upload_video,
             video_path,
@@ -43,4 +46,4 @@ class UploaderService:
             title,
             description,
         )
-        print(f"[SUCCESS] YouTube upload completed: {result.youtube_url} ({result.privacy_status})")
+        logger.info("YouTube upload completed: %s (%s)", result.youtube_url, result.privacy_status)
