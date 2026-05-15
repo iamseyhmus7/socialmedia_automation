@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import warnings
@@ -16,6 +17,7 @@ from src.core.settings import Settings, get_settings
 from src.domain.state import create_initial_state
 from src.services.bot_controller import BotController
 from src.services.publish_queue_service import PublishQueueService
+from src.services.system_health_service import SystemHealthService
 from src.services.telegram_service import TelegramService
 from src.services.telegram_router import TelegramRouter
 from src.services.tiktok_due_publish_service import TikTokDuePublishService
@@ -25,6 +27,7 @@ from src.workflows.factory import create_workflow
 
 
 warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
 FeedbackMessageProvider = Callable[[int], Awaitable[str | None]]
 
@@ -49,14 +52,21 @@ class BotControllerFactory:
             return await app.ainvoke(create_initial_state())
 
         queue_service = PublishQueueService()
+        health_service = SystemHealthService(self.settings)
         due_service = TikTokDuePublishService(self.tiktok_service_factory.create(self.settings))
         cleanup_service = MediaCleanupService(self.settings.assets_dir)
         return BotController(
             run_one_video,
             queue_provider=queue_service.queue_text,
+            queue_detail_provider=queue_service.queue_detail_text,
+            queue_expired_provider=queue_service.expired_text,
+            queue_cleanup_provider=queue_service.cleanup_text,
+            queue_cancel_provider=queue_service.cancel_text,
+            queue_reschedule_provider=queue_service.reschedule_text,
             due_publisher=due_service.publish_due_text,
             message_sender=message_sender,
             cleanup_callback=cleanup_service.cleanup_intermediate_assets,
+            status_provider=health_service.health_text,
         )
 
 
@@ -78,7 +88,7 @@ class TelegramBotApplication:
         self.router = self._create_router()
 
         self.telegram.send_message("Komut sistemi hazir. /start yazabilirsiniz.")
-        print("[BOT] Telegram command bot started.", flush=True)
+        logger.info("Telegram command bot started")
 
         while True:
             await self.router.poll_once(1)
@@ -113,9 +123,9 @@ def main() -> None:
     try:
         asyncio.run(run_bot())
     except KeyboardInterrupt:
-        print("\n[INFO] Bot stopped by user.")
+        logger.info("Bot stopped by user")
     except Exception as exc:
-        print(f"\n[FATAL ERROR] Bot error: {exc}")
+        logger.exception("Bot error: %s", exc)
         raise
 
 
