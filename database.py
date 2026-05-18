@@ -1,11 +1,15 @@
 import hashlib
 import json
+import logging
 import os
 import re
 from contextlib import contextmanager
-from difflib import SequenceMatcher
 
 from src.core.settings import get_settings
+from src.services.script_embedding_service import ScriptEmbeddingService
+
+
+logger = logging.getLogger(__name__)
 
 
 class Database:
@@ -119,45 +123,80 @@ class HistoryDatabase:
             "theme_norm": theme_norm,
         }
 
-    def is_script_used_or_similar(self, script_data, hook_threshold=0.88, theme_threshold=0.90):
-        fingerprint = self.script_fingerprint(script_data)
+    def is_script_used_or_similar(self, script_data, semantic_threshold=None):
+        return self.find_similar_script_match(script_data, semantic_threshold) is not None
+
+    def find_similar_script_match(self, script_data, semantic_threshold=None):
+        settings = get_settings()
+        threshold = float(semantic_threshold or getattr(settings, "script_similarity_threshold", 0.80))
+        embedding_service = self._script_embedding_service(settings)
+        try:
+            embedding = embedding_service.embed_script(script_data)
+        except Exception as exc:
+            logger.warning("Script semantic similarity check skipped: %s", exc)
+            return None
+
+        vector = self._vector_literal(embedding)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT script_hash, hook, hook_hash, theme_hash, script_json
+                SELECT id, hook, body, outro, script_json, embedding_text, 1 - (embedding <=> %s::vector) AS similarity
                 FROM used_scripts
-                WHERE status = 'approved' OR status IS NULL
-                """
+                WHERE (status = 'approved' OR status IS NULL)
+                  AND embedding IS NOT NULL
+                  AND embedding_model = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT 1
+                """,
+                (vector, embedding_service.model_name, vector),
             )
-            for script_hash, hook, hook_hash, theme_hash, script_json in cursor.fetchall():
-                if script_hash == fingerprint["script_hash"]:
-                    return True
-                if hook_hash == fingerprint["hook_hash"] or theme_hash == fingerprint["theme_hash"]:
-                    return True
-                existing_theme = ""
-                if script_json:
-                    try:
-                        existing_data = json.loads(script_json)
-                        existing_theme = self.script_fingerprint(existing_data)["theme_norm"]
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        existing_theme = ""
-                hook_score = SequenceMatcher(None, fingerprint["hook_norm"], self._normalize_text(hook or "")).ratio()
-                theme_score = SequenceMatcher(None, fingerprint["theme_norm"], existing_theme).ratio() if existing_theme else 0
-                if hook_score >= hook_threshold or theme_score >= theme_threshold:
-                    return True
-        return False
+            row = cursor.fetchone()
+        if not row:
+            return None
+        similarity = float(row[6] or 0.0)
+        if similarity >= threshold:
+            logger.info(
+                "Script semantic duplicate detected id=%s similarity=%.3f threshold=%.3f hook=%s",
+                row[0],
+                similarity,
+                threshold,
+                row[1],
+            )
+            script_data = self._script_data_from_history(row[4], row[1], row[2], row[3])
+            return {
+                "id": row[0],
+                "hook": row[1],
+                "body": row[2],
+                "outro": row[3],
+                "script_data": script_data,
+                "embedding_text": row[5],
+                "similarity": similarity,
+                "threshold": threshold,
+            }
+        return None
 
     def mark_script_as_used(self, script_data, final_video_path=None, status="approved"):
         fingerprint = self.script_fingerprint(script_data)
+        settings = get_settings()
+        embedding_service = self._script_embedding_service(settings)
+        embedding = None
+        embedding_text = None
+        try:
+            embedding_text = embedding_service.embedding_text(script_data)
+            embedding = embedding_service.embed_script(script_data)
+        except Exception as exc:
+            logger.warning("Script embedding could not be saved: %s", exc)
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO used_scripts (
-                    script_hash, hook_hash, theme_hash, hook, body, outro, script_json, final_video_path, status
+                    script_hash, hook_hash, theme_hash, hook, body, outro, script_json,
+                    final_video_path, status, embedding, embedding_model, embedding_text
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
                 ON CONFLICT(script_hash) DO UPDATE SET
                     hook = EXCLUDED.hook,
                     body = EXCLUDED.body,
@@ -165,6 +204,9 @@ class HistoryDatabase:
                     script_json = EXCLUDED.script_json,
                     final_video_path = EXCLUDED.final_video_path,
                     status = EXCLUDED.status,
+                    embedding = EXCLUDED.embedding,
+                    embedding_model = EXCLUDED.embedding_model,
+                    embedding_text = EXCLUDED.embedding_text,
                     used_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -177,6 +219,9 @@ class HistoryDatabase:
                     json.dumps(script_data, ensure_ascii=False),
                     final_video_path,
                     status,
+                    self._vector_literal(embedding) if embedding else None,
+                    embedding_service.model_name if embedding else None,
+                    embedding_text,
                 ),
             )
             conn.commit()
@@ -666,6 +711,31 @@ class HistoryDatabase:
     def _hash_text(self, text):
         return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
 
+    def _script_embedding_service(self, settings=None):
+        if hasattr(self, "_embedding_service"):
+            return self._embedding_service
+        settings = settings or get_settings()
+        return ScriptEmbeddingService(
+            getattr(settings, "gemini_api_key", None),
+            getattr(settings, "gemini_embedding_model", "gemini-embedding-001"),
+            getattr(settings, "script_embedding_dimensions", 768),
+        )
+
+    def _vector_literal(self, values):
+        if values is None:
+            return None
+        return "[" + ",".join(str(float(value)) for value in values) + "]"
+
+    def _script_data_from_history(self, script_json, hook, body, outro):
+        if script_json:
+            try:
+                parsed = json.loads(script_json)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return {"hook": hook or "", "body": body or "", "outro": outro or ""}
+
     def _extract_id(self, path, prefix):
         if not path:
             return None
@@ -684,6 +754,16 @@ class PostgresDatabase(HistoryDatabase):
     def _init_db(self):
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            try:
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            except Exception as exc:
+                if "extension \"vector\" is not available" in str(exc):
+                    raise RuntimeError(
+                        "PostgreSQL pgvector extension is not installed on the running server. "
+                        "Recreate the postgres container with the pgvector image, without deleting the volume: "
+                        "`docker compose up -d --force-recreate postgres`."
+                    ) from exc
+                raise
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS used_videos (
@@ -729,6 +809,16 @@ class PostgresDatabase(HistoryDatabase):
                     status TEXT DEFAULT 'approved',
                     used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+                """
+            )
+            self._ensure_column(cursor, "used_scripts", "embedding", "vector(768)")
+            self._ensure_column(cursor, "used_scripts", "embedding_model", "TEXT")
+            self._ensure_column(cursor, "used_scripts", "embedding_text", "TEXT")
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_used_scripts_embedding_hnsw
+                ON used_scripts USING hnsw (embedding vector_cosine_ops)
+                WHERE embedding IS NOT NULL
                 """
             )
             cursor.execute(
@@ -846,8 +936,12 @@ def mark_music_as_used(freesound_id, query=None, name=None, asset_path=None, fin
     Database().mark_music_as_used(freesound_id, query, name, asset_path, final_video_path, status)
 
 
-def is_script_used_or_similar(script_data, hook_threshold=0.88, theme_threshold=0.90):
-    return Database().is_script_used_or_similar(script_data, hook_threshold, theme_threshold)
+def is_script_used_or_similar(script_data, semantic_threshold=None):
+    return Database().is_script_used_or_similar(script_data, semantic_threshold)
+
+
+def find_similar_script_match(script_data, semantic_threshold=None):
+    return Database().find_similar_script_match(script_data, semantic_threshold)
 
 
 def save_youtube_metadata(final_video_path, title, description="", tags=None, status="ready"):
