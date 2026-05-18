@@ -1,5 +1,6 @@
 # Core AI & LLM
 google-generativeai
+google-genai
 langgraph
 langchain-google-genai
 langchain-core
