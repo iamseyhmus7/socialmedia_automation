@@ -10,6 +10,10 @@ from src.services.video_metadata_service import build_upload_metadata
 YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 
 
+class YouTubeAuthenticationError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class YouTubeUploadResult:
     video_id: str
@@ -41,8 +45,12 @@ class YouTubeUploadService:
         self.default_privacy_status = default_privacy_status or "public"
         self.category_id = category_id or "22"
 
-    def ensure_authenticated(self) -> None:
-        self._get_credentials()
+    def ensure_authenticated(
+        self,
+        force_reauth: bool = False,
+        auth_server_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        self._get_credentials(force_reauth=force_reauth, auth_server_kwargs=auth_server_kwargs)
 
     def upload_video(
         self,
@@ -144,22 +152,35 @@ class YouTubeUploadService:
 
         return MediaFileUpload(video_path, chunksize=-1, resumable=True, mimetype="video/*")
 
-    def _get_credentials(self):
+    def _get_credentials(
+        self,
+        force_reauth: bool = False,
+        auth_server_kwargs: dict[str, Any] | None = None,
+    ):
         try:
             from google.auth.transport.requests import Request
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
+            from google.auth.exceptions import RefreshError
         except ImportError as exc:
             raise RuntimeError(
                 "Google OAuth paketleri kurulu degil. `pip install -r requirements.txt` calistirin."
             ) from exc
 
         credentials = None
-        if os.path.exists(self.token_path):
+        if not force_reauth and os.path.exists(self.token_path):
             credentials = Credentials.from_authorized_user_file(self.token_path, [YOUTUBE_UPLOAD_SCOPE])
 
         if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except RefreshError as exc:
+                if self._is_invalid_grant(exc):
+                    raise YouTubeAuthenticationError(
+                        "YouTube OAuth token expired or revoked. Run `python tools/yt_login.py` to create a fresh token, "
+                        "then approve the video again with OK."
+                    ) from exc
+                raise
 
         if not credentials or not credentials.valid:
             if not os.path.exists(self.client_secrets_path):
@@ -168,12 +189,17 @@ class YouTubeUploadService:
                     f"{self.client_secrets_path}. Google Cloud'dan Desktop OAuth JSON indirip bu path'e koyun."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(self.client_secrets_path, [YOUTUBE_UPLOAD_SCOPE])
-            credentials = flow.run_local_server(port=0, prompt="consent")
+            server_kwargs = auth_server_kwargs or {"port": 0}
+            credentials = flow.run_local_server(prompt="consent", **server_kwargs)
 
         os.makedirs(os.path.dirname(self.token_path), exist_ok=True)
         with open(self.token_path, "w", encoding="utf-8") as token_file:
             token_file.write(credentials.to_json())
         return credentials
+
+    def _is_invalid_grant(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "invalid_grant" in text or "expired or revoked" in text
 
     def _execute_resumable_upload(self, request) -> dict[str, Any]:
         response = None
