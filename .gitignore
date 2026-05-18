@@ -11,3 +11,4 @@ user_data_wp/
 user_data/*.json
 user_data/*token*
 user_data/*secret*
+motivation_*
