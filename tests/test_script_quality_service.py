@@ -69,13 +69,74 @@ class ScriptQualityServiceTests(unittest.TestCase):
 
         agent = ContentAgent(FakeContentService(), self.quality)
 
-        with patch("src.agents.content_agent.is_script_used_or_similar", return_value=False):
+        with patch("src.agents.content_agent.find_similar_script_match", return_value=None):
             script = agent.generate_script(max_attempts=1)
 
         self.assertEqual(script["hook"], "You are wasting pressure.")
         self.assertEqual(script["style"], "aggressive_viral_motivation")
         self.assertIn("quality_report", script)
         self.assertTrue(script["quality_report"]["valid"])
+
+    def test_content_agent_feeds_duplicate_matches_back_to_generation_prompt(self):
+        class FakeContentService:
+            def __init__(self):
+                self.avoid_calls = []
+
+            def generate_motivation_candidates(self, count=5, avoid_scripts=None):
+                self.avoid_calls.append(list(avoid_scripts or []))
+                return [
+                    {
+                        "hook": "You are wasting pressure.",
+                        "body": "You avoid the uncomfortable hour, but that hour is where discipline starts replacing the story you keep repeating when nobody is watching.",
+                        "outro": "Use the pressure today, before comfort teaches you to waste it again.",
+                        "loop_ending": "That is how you stop wasting pressure.",
+                        "vurgulanacak_kelimeler": ["pressure", "discipline", "comfort"],
+                    }
+                ]
+
+        content_service = FakeContentService()
+        agent = ContentAgent(content_service, self.quality)
+        duplicate = {
+            "similarity": 0.91,
+            "hook": "Old hook",
+            "body": "Old body",
+            "outro": "Old outro",
+            "script_data": {"hook": "Old hook", "body": "Old body", "outro": "Old outro"},
+        }
+
+        with patch("src.agents.content_agent.find_similar_script_match", side_effect=[duplicate, None]):
+            script = agent.generate_script(max_attempts=2)
+
+        self.assertEqual(script["hook"], "You are wasting pressure.")
+        self.assertEqual(content_service.avoid_calls[0], [])
+        self.assertEqual(content_service.avoid_calls[1][0]["matched_hook"], "Old hook")
+        self.assertEqual(content_service.avoid_calls[1][0]["matched_body"], "Old body")
+
+    def test_content_agent_rejects_all_similar_scripts_after_retries(self):
+        class FakeContentService:
+            def generate_motivation_candidates(self, count=5, avoid_scripts=None):
+                return [
+                    {
+                        "hook": "You are wasting pressure.",
+                        "body": "You avoid the uncomfortable hour, but that hour is where discipline starts replacing the story you keep repeating when nobody is watching.",
+                        "outro": "Use the pressure today, before comfort teaches you to waste it again.",
+                        "loop_ending": "That is how you stop wasting pressure.",
+                        "vurgulanacak_kelimeler": ["pressure", "discipline", "comfort"],
+                    }
+                ]
+
+        agent = ContentAgent(FakeContentService(), self.quality)
+        duplicate = {
+            "similarity": 0.91,
+            "hook": "Old hook",
+            "body": "Old body",
+            "outro": "Old outro",
+            "script_data": {"hook": "Old hook", "body": "Old body", "outro": "Old outro"},
+        }
+
+        with patch("src.agents.content_agent.find_similar_script_match", return_value=duplicate):
+            with self.assertRaisesRegex(RuntimeError, "semantically distinct"):
+                agent.generate_script(max_attempts=2)
 
     def test_quality_report_exposes_counts_components_and_risks(self):
         script = self.quality.normalize_script(
