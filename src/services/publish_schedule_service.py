@@ -5,9 +5,7 @@ from zoneinfo import ZoneInfo
 
 
 class PublishScheduleService:
-    WEEKDAY_SCHEDULE_SLOTS = ["17:30", "18:30", "20:30", "22:30", "01:00", "03:00", "05:00"]
-    WEEKEND_SCHEDULE_SLOTS = ["10:00", "13:00", "17:00", "19:00", "20:30", "21:45", "23:00"]
-    DEFAULT_SCHEDULE_PROFILE = "auto"
+    SCHEDULE_SLOTS = ["21:00", "00:00", "01:30", "03:00", "05:00", "06:00", "07:30", "09:00"]
 
     def __init__(self, timezone_name: str = "Europe/Istanbul"):
         self.timezone = ZoneInfo(timezone_name)
@@ -17,11 +15,10 @@ class PublishScheduleService:
         date_folder: str | None,
         now: datetime | None = None,
         raw_slots: str | None = None,
-        requested_profile: str = DEFAULT_SCHEDULE_PROFILE,
         occupied_publish_times: list[str] | None = None,
     ) -> str:
         schedule_date = self.schedule_date_for_folder(date_folder)
-        slots, _profile = self.resolve_schedule_slots(schedule_date, raw_slots, requested_profile)
+        slots = self.resolve_schedule_slots(raw_slots)
         return self.build_schedule(schedule_date, 1, slots, now=now, occupied_publish_times=occupied_publish_times)[0]
 
     def build_schedule(
@@ -64,15 +61,9 @@ class PublishScheduleService:
 
         return scheduled_times
 
-    def resolve_schedule_slots(
-        self,
-        schedule_date: date,
-        raw_slots: str | None = None,
-        requested_profile: str = DEFAULT_SCHEDULE_PROFILE,
-    ) -> tuple[list[time], str]:
-        profile = self.schedule_profile_for_date(schedule_date, requested_profile)
-        slot_values = raw_slots.split(",") if raw_slots else self.default_slots_for_profile(profile)
-        return self.parse_slots(",".join(slot_values)), profile
+    def resolve_schedule_slots(self, raw_slots: str | None = None) -> list[time]:
+        slot_values = raw_slots or ",".join(self.SCHEDULE_SLOTS)
+        return self.parse_slots(slot_values)
 
     def schedule_date_for_folder(self, date_folder: str | None) -> date:
         if date_folder:
@@ -81,20 +72,6 @@ class PublishScheduleService:
             except ValueError:
                 pass
         return datetime.now(self.timezone).date()
-
-    def schedule_profile_for_date(
-        self,
-        schedule_date: date,
-        requested_profile: str = DEFAULT_SCHEDULE_PROFILE,
-    ) -> str:
-        if requested_profile != self.DEFAULT_SCHEDULE_PROFILE:
-            return requested_profile
-        return "weekend" if schedule_date.weekday() >= 5 else "weekday"
-
-    def default_slots_for_profile(self, profile: str) -> list[str]:
-        if profile == "weekend":
-            return self.WEEKEND_SCHEDULE_SLOTS
-        return self.WEEKDAY_SCHEDULE_SLOTS
 
     def parse_slots(self, value: str) -> list[time]:
         slots = []
