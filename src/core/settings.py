@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+
 try:
     from dotenv import load_dotenv
 except ImportError:
-    def load_dotenv() -> None:
-        env_path = os.path.join(os.getcwd(), ".env")
+    def load_dotenv(path: str | None = None) -> None:
+        env_path = path or os.path.join(os.getcwd(), ".env")
         if not os.path.exists(env_path):
             return
         with open(env_path, "r", encoding="utf-8") as env_file:
@@ -19,7 +22,10 @@ except ImportError:
                 os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-load_dotenv()
+try:
+    load_dotenv(ENV_PATH)
+except TypeError:
+    load_dotenv()
 
 
 @dataclass(frozen=True)
@@ -57,10 +63,13 @@ class Settings:
     video_height: int = 1920
     fps: int = 30
     gemini_model: str = "gemini-3-flash-preview"
+    gemini_embedding_model: str = "gemini-embedding-001"
+    script_embedding_dimensions: int = 768
+    script_similarity_threshold: float = 0.80
 
 
 def get_settings() -> Settings:
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    base_dir = PROJECT_ROOT
     youtube_client_secrets_path = _resolve_path(
         base_dir,
         os.getenv("YOUTUBE_CLIENT_SECRETS_PATH", os.path.join("user_data", "youtube_client_secret.json")),
@@ -107,6 +116,10 @@ def get_settings() -> Settings:
         tiktok_disable_duet=_env_bool("TIKTOK_DISABLE_DUET", False),
         tiktok_disable_stitch=_env_bool("TIKTOK_DISABLE_STITCH", False),
         tiktok_is_aigc=_env_bool("TIKTOK_IS_AIGC", True),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3-flash-preview"),
+        gemini_embedding_model=os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
+        script_embedding_dimensions=_env_int("SCRIPT_EMBEDDING_DIMENSIONS", 768),
+        script_similarity_threshold=_env_float("SCRIPT_SIMILARITY_THRESHOLD", 0.80),
     )
 
 
@@ -121,3 +134,23 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
