@@ -34,6 +34,25 @@ class GeminiContentServiceJsonParsingTests(unittest.TestCase):
 
         self.assertEqual(data["hook"], "Your comfort is loud.")
 
+    def test_avoid_prompt_includes_duplicate_context(self):
+        service = self.make_service()
+
+        prompt = service._avoid_prompt(
+            [
+                {
+                    "similarity": 0.91,
+                    "rejected_hook": "You are rotting in comfort.",
+                    "matched_hook": "You are rotting in your comfort.",
+                    "matched_body": "Old body",
+                    "matched_outro": "Old outro",
+                }
+            ]
+        )
+
+        self.assertIn("similarity=0.91", prompt)
+        self.assertIn("rejected_hook: You are rotting in comfort.", prompt)
+        self.assertIn("matched_hook: You are rotting in your comfort.", prompt)
+
 
 class ScriptQualityVisualNormalizationTests(unittest.TestCase):
     def test_normalize_script_rewrites_weak_visual_terms(self):
