@@ -31,7 +31,7 @@ class FeedbackPlanValidatorTests(unittest.TestCase):
                         "target": "intro",
                         "instruction": "Rewrite opening sentence",
                         "params": {},
-                        "confidence": 0.86,
+                        "confidence": 0.8,
                     },
                 ],
             },
