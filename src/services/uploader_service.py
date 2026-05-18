@@ -20,10 +20,15 @@ class UploaderService:
             settings.youtube_category_id,
         )
 
-    async def login_manually(self, platform_url: str = "https://studio.youtube.com/") -> None:
+    async def login_manually(
+        self,
+        platform_url: str = "https://studio.youtube.com/",
+        force_reauth: bool = True,
+        auth_server_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         logger.info("Starting YouTube OAuth flow")
         logger.info("A Google OAuth browser window will open if a fresh token is needed")
-        await asyncio.to_thread(self.youtube_service.ensure_authenticated)
+        await asyncio.to_thread(self.youtube_service.ensure_authenticated, force_reauth, auth_server_kwargs)
         logger.info("YouTube OAuth token is ready")
 
     async def upload_to_all(self, video_path: str) -> None:
