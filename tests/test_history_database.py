@@ -9,6 +9,25 @@ sys.modules.setdefault("dotenv", types.SimpleNamespace(load_dotenv=lambda: None)
 import database
 
 
+class FakeEmbeddingService:
+    def __init__(self, vector=None, model_name="test-embedding", error=None):
+        self.vector = vector or [1.0, 0.0, 0.0]
+        self.model_name = model_name
+        self.error = error
+
+    def embed_script(self, script_data):
+        if self.error:
+            raise self.error
+        return self.vector
+
+    def embedding_text(self, script_data):
+        return " ".join(
+            str(script_data.get(key, ""))
+            for key in ["hook", "body", "outro"]
+            if script_data.get(key)
+        )
+
+
 class FakeCursor:
     def __init__(self, rows=None):
         self.rows = rows or []
@@ -77,6 +96,10 @@ class HistoryDatabaseTests(unittest.TestCase):
         self.assertIn("information_schema.columns", sql)
         self.assertIn("ALTER TABLE used_videos ADD COLUMN source TEXT DEFAULT 'pexels'", sql)
         self.assertIn("ALTER TABLE used_music ADD COLUMN source TEXT DEFAULT 'freesound'", sql)
+        self.assertIn("CREATE EXTENSION IF NOT EXISTS vector", sql)
+        self.assertIn("ALTER TABLE used_scripts ADD COLUMN embedding vector(768)", sql)
+        self.assertIn("ALTER TABLE used_scripts ADD COLUMN embedding_model TEXT", sql)
+        self.assertIn("idx_used_scripts_embedding_hnsw", sql)
         self.assertIn("DROP TABLE IF EXISTS used_voiceovers", sql)
         self.assertTrue(conn.committed)
 
@@ -198,7 +221,7 @@ class HistoryDatabaseTests(unittest.TestCase):
             ],
         )
 
-    def test_script_similarity_blocks_near_duplicate_approved_scripts(self):
+    def test_script_similarity_uses_embedding_search_for_duplicates(self):
         script = {
             "hook": "Your excuses are costing you.",
             "body": "Every delay becomes the future you complain about.",
@@ -207,21 +230,86 @@ class HistoryDatabaseTests(unittest.TestCase):
             "pexels_arama_temasi": "discipline under pressure",
             "pexels_anahtar_kelimeleri": ["lonely runner", "dark gym"],
         }
-        existing = database.PostgresDatabase.__new__(database.PostgresDatabase).script_fingerprint(script)
-        cursor = FakeCursor(rows=[(existing["script_hash"], script["hook"], existing["hook_hash"], existing["theme_hash"], None)])
+        cursor = FakeCursor(rows=[(42, "Old hook", "Old body", "Old outro", None, "Old hook Old body Old outro", 0.91)])
         conn = FakeConnection(cursor)
         db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService(vector=[0.7, 0.2, 0.1])
 
         @contextmanager
         def fake_connection():
             yield conn
 
         db._get_connection = fake_connection
-        near_duplicate = dict(script)
-        near_duplicate["hook"] = "Your excuses are costing you"
 
-        self.assertTrue(db.is_script_used_or_similar(near_duplicate))
+        self.assertTrue(db.is_script_used_or_similar(script, semantic_threshold=0.8))
+        self.assertIn("embedding <=> %s::vector", cursor.statements[-1])
+        self.assertEqual(cursor.params[-1], ("[0.7,0.2,0.1]", "test-embedding", "[0.7,0.2,0.1]"))
 
+    def test_find_similar_script_match_returns_prompt_context(self):
+        cursor = FakeCursor(rows=[(42, "Old hook", "Old body", "Old outro", None, "Old hook Old body Old outro", 0.91)])
+        conn = FakeConnection(cursor)
+        db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService(vector=[0.7, 0.2, 0.1])
+
+        @contextmanager
+        def fake_connection():
+            yield conn
+
+        db._get_connection = fake_connection
+
+        match = db.find_similar_script_match({"hook": "New pressure story"}, semantic_threshold=0.8)
+
+        self.assertEqual(match["id"], 42)
+        self.assertEqual(match["hook"], "Old hook")
+        self.assertEqual(match["body"], "Old body")
+        self.assertEqual(match["outro"], "Old outro")
+        self.assertEqual(match["similarity"], 0.91)
+
+    def test_script_similarity_allows_below_threshold_matches(self):
+        cursor = FakeCursor(rows=[(42, "Old hook", "Old body", "Old outro", None, "Old hook Old body Old outro", 0.73)])
+        conn = FakeConnection(cursor)
+        db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService()
+
+        @contextmanager
+        def fake_connection():
+            yield conn
+
+        db._get_connection = fake_connection
+
+        self.assertFalse(db.is_script_used_or_similar({"hook": "New pressure story"}, semantic_threshold=0.8))
+
+    def test_script_similarity_falls_back_open_when_embedding_fails(self):
+        db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService(error=RuntimeError("quota"))
+
+        self.assertFalse(db.is_script_used_or_similar({"hook": "New pressure story"}))
+
+    def test_mark_script_as_used_saves_embedding_payload(self):
+        cursor = FakeCursor()
+        conn = FakeConnection(cursor)
+        db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService(vector=[0.5, 0.5, 0.0])
+
+        @contextmanager
+        def fake_connection():
+            yield conn
+
+        db._get_connection = fake_connection
+
+        script_hash = db.mark_script_as_used(
+            {
+                "hook": "Your excuses are costing you.",
+                "body": "Every delay becomes the future you complain about.",
+                "outro": "Choose discipline now.",
+            },
+            final_video_path="final.mp4",
+        )
+
+        self.assertTrue(script_hash)
+        self.assertIn("embedding, embedding_model, embedding_text", cursor.statements[-1])
+        self.assertEqual(cursor.params[-1][-3:], ("[0.5,0.5,0.0]", "test-embedding", "Your excuses are costing you. Every delay becomes the future you complain about. Choose discipline now."))
+        self.assertTrue(conn.committed)
 
 if __name__ == "__main__":
     unittest.main()
