@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import Mock, patch
 
-from src.services.youtube_upload_service import YouTubeUploadService
+from src.services.youtube_upload_service import YouTubeAuthenticationError, YouTubeUploadService
 
 
 class YouTubeUploadServiceTests(unittest.TestCase):
@@ -40,6 +41,42 @@ class YouTubeUploadServiceTests(unittest.TestCase):
 
         self.assertEqual(metadata.privacy_status, "private")
         self.assertEqual(metadata.publish_at, "2026-05-09T15:00:00Z")
+
+    def test_expired_or_revoked_refresh_token_has_actionable_error(self):
+        class FakeRefreshError(Exception):
+            pass
+
+        credentials = Mock()
+        credentials.expired = True
+        credentials.refresh_token = "refresh-token"
+        credentials.refresh.side_effect = FakeRefreshError("invalid_grant: Token has been expired or revoked.")
+
+        service = YouTubeUploadService("client.json", "token.json")
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch.dict(
+                "sys.modules",
+                {
+                    "google.auth.transport.requests": type("Module", (), {"Request": Mock})(),
+                    "google.oauth2.credentials": type(
+                        "Module",
+                        (),
+                        {
+                            "Credentials": type(
+                                "Credentials",
+                                (),
+                                {"from_authorized_user_file": Mock(return_value=credentials)},
+                            )
+                        },
+                    )(),
+                    "google_auth_oauthlib.flow": type("Module", (), {"InstalledAppFlow": Mock})(),
+                    "google.auth.exceptions": type("Module", (), {"RefreshError": FakeRefreshError})(),
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(YouTubeAuthenticationError, "tools/yt_login.py"):
+                service._get_credentials()
 
 
 if __name__ == "__main__":
