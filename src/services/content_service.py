@@ -17,8 +17,9 @@ class GeminiContentService:
         candidates = self.generate_motivation_candidates(count=1)
         return candidates[0]
 
-    def generate_motivation_candidates(self, count: int = 5) -> list[dict]:
+    def generate_motivation_candidates(self, count: int = 5, avoid_scripts: list[dict] | None = None) -> list[dict]:
         candidate_count = max(3, min(int(count), 5))
+        avoid_prompt = self._avoid_prompt(avoid_scripts or [])
         prompt = f"""
 You are an elite short-form retention strategist for TikTok, Reels, and YouTube Shorts.
 Create aggressive viral English motivational scripts that make the viewer feel personally called out.
@@ -45,6 +46,10 @@ Hard rules for every candidate:
    - media_plan.music.backup_queries must contain 2-3 alternate 2-4 word searches.
    - Use concrete audio terms like "clock ticking cinematic", "tense piano", "cinematic drone", "sub bass cinematic", "ambient tension".
    - Do not put constraints like "no vocals", "emotional build", "motivational background music", or full sentences in search_query.
+11. Do not reuse the same emotional premise, hook family, wording pattern, or visual story as any avoid example below.
+    If avoid examples mention cowardice, comfort-rotting, being saved, losing, excuses, phones, or fear, move to a genuinely different premise.
+
+{avoid_prompt}
 
 Return only this JSON object:
 {{
@@ -111,6 +116,28 @@ Return only this JSON object:
         if isinstance(data, dict):
             return [data]
         return []
+
+    def _avoid_prompt(self, avoid_scripts: list[dict]) -> str:
+        if not avoid_scripts:
+            return "Avoid examples: none yet."
+
+        lines = [
+            "Avoid examples from approved history and rejected retries:",
+            "Generate a different psychological angle, not just synonyms of these examples.",
+        ]
+        for index, item in enumerate(avoid_scripts[-6:], start=1):
+            lines.append(
+                "\n".join(
+                    [
+                        f"{index}. similarity={item.get('similarity', '')}",
+                        f"   rejected_hook: {item.get('rejected_hook', '')}",
+                        f"   matched_hook: {item.get('matched_hook', '')}",
+                        f"   matched_body: {item.get('matched_body', '')}",
+                        f"   matched_outro: {item.get('matched_outro', '')}",
+                    ]
+                )
+            )
+        return "\n".join(lines)
 
     def edit_script(self, original_script_data: dict, actions: list) -> dict:
         action_summaries = [
