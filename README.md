@@ -47,7 +47,7 @@ python tools\publish_due_tiktok.py
 
 Docker Compose iki servis baslatir:
 
-- `postgres`: Video gecmisi, metadata ve yayin kuyrugunu saklar.
+- `postgres`: Video gecmisi, metadata, embedding tabanli script hafizasi ve yayin kuyrugunu saklar.
 - `bot`: Telegram komut botunu ayakta tutar.
 - `tiktok-due`: Her 5 dakikada bir zamani gelen TikTok kaydi var mi diye kontrol eder.
 
@@ -91,6 +91,18 @@ docker compose down
 TikTok zamanlama v1'de PostgreSQL kuyrugu ile calisir. Uretim sonunda TikTok kaydi `tiktok_uploads` tablosuna yazilir. Gercek upload, `/publish_due` komutu veya `tools\publish_due_tiktok.py` ile zamani gelen kayitlar icin tetiklenir.
 
 Scheduler kurulumunu testler ve manuel smoke test basarili olmadan acmayin.
+
+## Script tekrar onleme
+
+Onaylanan scriptler PostgreSQL `pgvector` ile semantik embedding olarak saklanir. Yeni script uretiminde sistem `gemini-embedding-001` ile aday scripti embed eder ve `SCRIPT_SIMILARITY_THRESHOLD` esigini asan gecmis eslesmeleri tekrar olarak reddeder.
+
+Varsayilan ayarlar:
+
+```powershell
+GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+SCRIPT_EMBEDDING_DIMENSIONS=768
+SCRIPT_SIMILARITY_THRESHOLD=0.80
+```
 
 ## Secret dosyalari
 
