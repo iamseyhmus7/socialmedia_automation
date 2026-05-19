@@ -243,7 +243,7 @@ class HistoryDatabaseTests(unittest.TestCase):
 
         self.assertTrue(db.is_script_used_or_similar(script, semantic_threshold=0.8))
         self.assertIn("embedding <=> %s::vector", cursor.statements[-1])
-        self.assertEqual(cursor.params[-1], ("[0.7,0.2,0.1]", "test-embedding", "[0.7,0.2,0.1]"))
+        self.assertEqual(cursor.params[-1], ("[0.7,0.2,0.1]", "test-embedding", "[0.7,0.2,0.1]", 1))
 
     def test_find_similar_script_match_returns_prompt_context(self):
         cursor = FakeCursor(rows=[(42, "Old hook", "Old body", "Old outro", None, "Old hook Old body Old outro", 0.91)])
@@ -264,6 +264,29 @@ class HistoryDatabaseTests(unittest.TestCase):
         self.assertEqual(match["body"], "Old body")
         self.assertEqual(match["outro"], "Old outro")
         self.assertEqual(match["similarity"], 0.91)
+
+    def test_find_similar_script_matches_returns_ranked_context(self):
+        cursor = FakeCursor(
+            rows=[
+                (42, "Top hook", "Top body", "Top outro", None, "Top hook Top body Top outro", 0.91),
+                (41, "Second hook", "Second body", "Second outro", None, "Second hook", 0.83),
+            ]
+        )
+        conn = FakeConnection(cursor)
+        db = database.PostgresDatabase.__new__(database.PostgresDatabase)
+        db._embedding_service = FakeEmbeddingService(vector=[0.7, 0.2, 0.1])
+
+        @contextmanager
+        def fake_connection():
+            yield conn
+
+        db._get_connection = fake_connection
+
+        matches = db.find_similar_script_matches({"hook": "New pressure story"}, limit=5)
+
+        self.assertEqual([match["id"] for match in matches], [42, 41])
+        self.assertEqual(matches[0]["similarity"], 0.91)
+        self.assertEqual(cursor.params[-1], ("[0.7,0.2,0.1]", "test-embedding", "[0.7,0.2,0.1]", 5))
 
     def test_script_similarity_allows_below_threshold_matches(self):
         cursor = FakeCursor(rows=[(42, "Old hook", "Old body", "Old outro", None, "Old hook Old body Old outro", 0.73)])
