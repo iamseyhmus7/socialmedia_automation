@@ -5,6 +5,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
+ARG APP_COMMAND="python -m src.app.bot"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core \
@@ -16,4 +17,5 @@ RUN python -m pip install --upgrade pip \
 
 COPY . .
 
-CMD ["python", "-m", "src.app.bot"]
+ENV APP_COMMAND=${APP_COMMAND}
+CMD ["sh", "-c", "$APP_COMMAND"]
