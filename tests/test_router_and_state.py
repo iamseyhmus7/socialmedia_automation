@@ -66,11 +66,11 @@ class RouterAndStateTests(unittest.TestCase):
 
         self.assertEqual(
             nodes._build_output_filename("2026-05-08", "20260508_121545", 1),
-            "2026-05-08\\motivation_20260508_121545.mp4",
+            os.path.join("2026-05-08", "motivation_20260508_121545.mp4"),
         )
         self.assertEqual(
             nodes._build_output_filename("2026-05-08", "20260508_121545", 2),
-            "2026-05-08\\motivation_20260508_121545.mp4",
+            os.path.join("2026-05-08", "motivation_20260508_121545.mp4"),
         )
 
     def test_legacy_revision_outputs_are_removed(self):
