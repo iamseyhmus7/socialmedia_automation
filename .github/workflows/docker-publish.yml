@@ -1,10 +1,10 @@
-name: CI/CD Pipeline
+name: Social-Media-Content-Production-CI/CD Pipeline
 
 on:
   push:
-    branches: ["master" ]
+    branches: ["master"]
   pull_request:
-    branches: ["master" ]
+    branches: ["master"]
 
 jobs:
   test:
