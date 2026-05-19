@@ -53,6 +53,29 @@ class GeminiContentServiceJsonParsingTests(unittest.TestCase):
         self.assertIn("rejected_hook: You are rotting in comfort.", prompt)
         self.assertIn("matched_hook: You are rotting in your comfort.", prompt)
 
+    def test_angle_prompt_includes_selected_brief(self):
+        service = self.make_service()
+
+        prompt = service._angle_prompt(
+            {
+                "angle_name": "Saved videos as debt",
+                "audience": "people who collect motivation",
+                "psychological_charge": "You turned learning into a cleaner form of hiding.",
+                "behavior_evidence": "the viewer keeps saving clips but avoids starting",
+                "consequence": "the goal keeps moving while the viewer feels productive",
+                "action_trigger": "start one ugly action before saving another video",
+                "fresh_metaphor": "unpaid debt",
+                "hook_direction": "Your saved videos are debt.",
+                "visual_story": "person scrolling saved videos alone at night",
+                "search_seed": "person using phone alone dark room close up",
+            }
+        )
+
+        self.assertIn("Selected angle brief", prompt)
+        self.assertIn("Saved videos as debt", prompt)
+        self.assertIn("cleaner form of hiding", prompt)
+        self.assertIn("Your saved videos are debt.", prompt)
+
 
 class ScriptQualityVisualNormalizationTests(unittest.TestCase):
     def test_normalize_script_rewrites_weak_visual_terms(self):
