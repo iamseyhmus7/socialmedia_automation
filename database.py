@@ -13,14 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 class Database:
+    _instance = None
+
     def __new__(cls):
-        settings = get_settings()
-        database_url = getattr(settings, "database_url", None)
-        if not database_url:
-            raise RuntimeError("DATABASE_URL ayarlanmamis. PostgreSQL baglantisi kurulamiyor.")
-        if not database_url.startswith(("postgresql://", "postgres://")):
-            raise RuntimeError("DATABASE_URL PostgreSQL baglanti adresi olmali.")
-        return PostgresDatabase(database_url)
+        if cls._instance is None:
+            settings = get_settings()
+            database_url = getattr(settings, "database_url", None)
+            if not database_url:
+                raise RuntimeError("DATABASE_URL ayarlanmamis. PostgreSQL baglantisi kurulamiyor.")
+            if not database_url.startswith(("postgresql://", "postgres://")):
+                raise RuntimeError("DATABASE_URL PostgreSQL baglanti adresi olmali.")
+            cls._instance = PostgresDatabase(database_url)
+        return cls._instance
 
 
 class HistoryDatabase:
@@ -129,14 +133,34 @@ class HistoryDatabase:
     def find_similar_script_match(self, script_data, semantic_threshold=None):
         settings = get_settings()
         threshold = float(semantic_threshold or getattr(settings, "script_similarity_threshold", 0.80))
+        matches = self.find_similar_script_matches(script_data, limit=1)
+        if not matches:
+            return None
+        match = matches[0]
+        similarity = float(match.get("similarity") or 0.0)
+        if similarity >= threshold:
+            logger.info(
+                "Script semantic duplicate detected id=%s similarity=%.3f threshold=%.3f hook=%s",
+                match.get("id"),
+                similarity,
+                threshold,
+                match.get("hook"),
+            )
+            match["threshold"] = threshold
+            return match
+        return None
+
+    def find_similar_script_matches(self, script_data, limit=5):
+        settings = get_settings()
         embedding_service = self._script_embedding_service(settings)
         try:
             embedding = embedding_service.embed_script(script_data)
         except Exception as exc:
             logger.warning("Script semantic similarity check skipped: %s", exc)
-            return None
+            return []
 
         vector = self._vector_literal(embedding)
+        limit = max(1, min(int(limit or 5), 20))
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -147,34 +171,25 @@ class HistoryDatabase:
                   AND embedding IS NOT NULL
                   AND embedding_model = %s
                 ORDER BY embedding <=> %s::vector
-                LIMIT 1
+                LIMIT %s
                 """,
-                (vector, embedding_service.model_name, vector),
+                (vector, embedding_service.model_name, vector, limit),
             )
-            row = cursor.fetchone()
-        if not row:
-            return None
-        similarity = float(row[6] or 0.0)
-        if similarity >= threshold:
-            logger.info(
-                "Script semantic duplicate detected id=%s similarity=%.3f threshold=%.3f hook=%s",
-                row[0],
-                similarity,
-                threshold,
-                row[1],
-            )
+            rows = cursor.fetchall()
+
+        matches = []
+        for row in rows:
             script_data = self._script_data_from_history(row[4], row[1], row[2], row[3])
-            return {
+            matches.append({
                 "id": row[0],
                 "hook": row[1],
                 "body": row[2],
                 "outro": row[3],
                 "script_data": script_data,
                 "embedding_text": row[5],
-                "similarity": similarity,
-                "threshold": threshold,
-            }
-        return None
+                "similarity": float(row[6] or 0.0),
+            })
+        return matches
 
     def mark_script_as_used(self, script_data, final_video_path=None, status="approved"):
         fingerprint = self.script_fingerprint(script_data)
@@ -942,6 +957,10 @@ def is_script_used_or_similar(script_data, semantic_threshold=None):
 
 def find_similar_script_match(script_data, semantic_threshold=None):
     return Database().find_similar_script_match(script_data, semantic_threshold)
+
+
+def find_similar_script_matches(script_data, limit=5):
+    return Database().find_similar_script_matches(script_data, limit)
 
 
 def save_youtube_metadata(final_video_path, title, description="", tags=None, status="ready"):
