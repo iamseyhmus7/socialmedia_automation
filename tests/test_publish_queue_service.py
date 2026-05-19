@@ -1,6 +1,17 @@
 import unittest
+from datetime import datetime
 
 from src.services.publish_queue_service import PublishQueueService
+from src.services.publish_schedule_service import PublishScheduleService
+
+
+class FrozenPublishScheduleService(PublishScheduleService):
+    def validate_publish_at(self, value, now=None, occupied_publish_times=None):
+        return super().validate_publish_at(
+            value,
+            now=datetime(2026, 5, 9, 10, 0),
+            occupied_publish_times=occupied_publish_times,
+        )
 
 
 class PublishQueueServiceTests(unittest.TestCase):
@@ -88,6 +99,7 @@ class PublishQueueServiceTests(unittest.TestCase):
             },
             reschedule_provider=lambda queue_id, publish_at: calls.append((queue_id, publish_at)) is None or True,
             occupied_publish_times_provider=lambda: [],
+            schedule_service=FrozenPublishScheduleService(),
         )
 
         text = service.reschedule_text("youtube:12", "2026-05-16 17:30")
@@ -103,6 +115,7 @@ class PublishQueueServiceTests(unittest.TestCase):
                 "publish_at": "2026-05-09T10:00:00Z",
             },
             occupied_publish_times_provider=lambda: ["2026-05-16T14:30:00Z"],
+            schedule_service=FrozenPublishScheduleService(),
         )
 
         self.assertIn("already occupied", service.reschedule_text("youtube:12", "2026-05-16 17:30"))
