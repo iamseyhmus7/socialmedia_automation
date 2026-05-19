@@ -19,6 +19,8 @@ CLICHE_PHRASES = {
 }
 
 POWER_TERMS = {
+    "bill",
+    "debt",
     "excuse",
     "excuses",
     "wasting",
@@ -35,6 +37,7 @@ POWER_TERMS = {
     "truth",
     "fear",
     "pain",
+    "rent",
 }
 
 CURIOSITY_TERMS = {
@@ -48,7 +51,40 @@ CURIOSITY_TERMS = {
     "costing",
     "wrong",
     "lying",
+    "first",
+    "hour",
+    "today",
 }
+
+CONCRETE_HOOK_TERMS = {
+    "alarm",
+    "bill",
+    "calendar",
+    "debt",
+    "floor",
+    "hour",
+    "kitchen",
+    "mirror",
+    "morning",
+    "phone",
+    "rent",
+    "saved",
+    "sink",
+    "tuesday",
+    "videos",
+}
+
+GENERIC_ATTACK_OPENERS = (
+    "you are ",
+    "you're ",
+    "you dont ",
+    "you don't ",
+    "you cant ",
+    "you can't ",
+    "nobody cares",
+    "nobody is coming",
+    "stop lying",
+)
 
 VISUAL_TERMS = {
     "close",
@@ -215,15 +251,20 @@ class ScriptQualityService:
 
         hook_words = self._words(hook)
         all_words = self._words(all_text)
+        hook_word_set = {word.lower() for word in hook_words}
         hook_score = 0.0
         if 3 <= len(hook_words) <= 8:
             hook_score += 0.35
-        if "you" in [word.lower() for word in hook_words]:
+        if "you" in hook_word_set or "your" in hook_word_set:
+            hook_score += 0.15
+        if hook_word_set & CONCRETE_HOOK_TERMS:
             hook_score += 0.20
         if any(word.lower() in POWER_TERMS for word in hook_words):
             hook_score += 0.25
         if any(word.lower() in CURIOSITY_TERMS for word in hook_words):
             hook_score += 0.20
+        if self._generic_attack_opener(hook):
+            hook_score -= 0.08
 
         cliche_hits = self.find_cliches(all_text)
         cliche_score = max(0.0, 1.0 - (0.35 * len(cliche_hits)))
@@ -248,7 +289,7 @@ class ScriptQualityService:
         )
 
         return {
-            "hook_score": round(min(hook_score, 1.0), 3),
+            "hook_score": round(max(0.0, min(hook_score, 1.0)), 3),
             "retention_score": round(min(retention_score, 1.0), 3),
             "cliche_score": round(cliche_score, 3),
             "visual_score": round(visual_score, 3),
@@ -515,3 +556,7 @@ class ScriptQualityService:
 
     def _normalize(self, text: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s']", " ", str(text or "").lower())).strip()
+
+    def _generic_attack_opener(self, hook: str) -> bool:
+        normalized = self._normalize(hook)
+        return any(normalized.startswith(pattern) for pattern in GENERIC_ATTACK_OPENERS)
